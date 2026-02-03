@@ -42,7 +42,7 @@
 		<string>cameraaccess://</string>
 		<key>MetaAppID</key>
 		<!-- Without Developer Mode, this key will need to be set with ID from the app registered in Wearables Developer Center -->
-		<string>0</string>
+		<string>$(META_APP_ID)</string>
 		<!-- Without Developer Mode, this key will need to be set with ClientToken from the app registered in Wearables Developer Center -->
 		<key>ClientToken</key>
 		<string>$(CLIENT_TOKEN)</string>
@@ -89,10 +89,6 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>fb-viewapp</string>
 	</array>
 </dict>
 </plist>

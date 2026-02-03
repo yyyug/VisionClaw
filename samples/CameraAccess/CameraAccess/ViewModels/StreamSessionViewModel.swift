@@ -37,15 +37,9 @@ class StreamSessionViewModel: ObservableObject {
     streamingStatus != .stopped
   }
 
-  // Timer properties
-  @Published var activeTimeLimit: StreamTimeLimit = .noLimit
-  @Published var remainingTime: TimeInterval = 0
-
   // Photo capture properties
   @Published var capturedPhoto: UIImage?
   @Published var showPhotoPreview: Bool = false
-
-  private var timerTask: Task<Void, Never>?
   // The core DAT SDK StreamSession - handles all streaming operations
   private var streamSession: StreamSession
   // Listener tokens are used to manage DAT SDK event subscriptions
@@ -144,11 +138,6 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   func startSession() async {
-    // Reset to unlimited time when starting a new stream
-    activeTimeLimit = .noLimit
-    remainingTime = 0
-    stopTimer()
-
     await streamSession.start()
   }
 
@@ -158,24 +147,12 @@ class StreamSessionViewModel: ObservableObject {
   }
 
   func stopSession() async {
-    stopTimer()
     await streamSession.stop()
   }
 
   func dismissError() {
     showError = false
     errorMessage = ""
-  }
-
-  func setTimeLimit(_ limit: StreamTimeLimit) {
-    activeTimeLimit = limit
-    remainingTime = limit.durationInSeconds ?? 0
-
-    if limit.isTimeLimited {
-      startTimer()
-    } else {
-      stopTimer()
-    }
   }
 
   func capturePhoto() {
@@ -185,25 +162,6 @@ class StreamSessionViewModel: ObservableObject {
   func dismissPhotoPreview() {
     showPhotoPreview = false
     capturedPhoto = nil
-  }
-
-  private func startTimer() {
-    stopTimer()
-    timerTask = Task { @MainActor [weak self] in
-      while let self, remainingTime > 0 {
-        try? await Task.sleep(nanoseconds: NSEC_PER_SEC)
-        guard !Task.isCancelled else { break }
-        remainingTime -= 1
-      }
-      if let self, !Task.isCancelled {
-        await stopSession()
-      }
-    }
-  }
-
-  private func stopTimer() {
-    timerTask?.cancel()
-    timerTask = nil
   }
 
   private func updateStatusFromState(_ state: StreamSessionState) {
@@ -234,6 +192,8 @@ class StreamSessionViewModel: ObservableObject {
       return "Audio streaming failed. Please try again."
     case .permissionDenied:
       return "Camera permission denied. Please grant permission in Settings."
+    case .hingesClosed:
+      return "The hinges on the glasses were closed. Please open the hinges and try again."
     @unknown default:
       return "An unknown streaming error occurred."
     }

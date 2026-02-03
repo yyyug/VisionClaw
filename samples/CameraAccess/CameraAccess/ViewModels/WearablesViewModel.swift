@@ -32,6 +32,7 @@ class WearablesViewModel: ObservableObject {
 
   private var registrationTask: Task<Void, Never>?
   private var deviceStreamTask: Task<Void, Never>?
+  private var setupDeviceStreamTask: Task<Void, Never>?
   private let wearables: WearablesInterface
   private var compatibilityListenerTokens: [DeviceIdentifier: AnyListenerToken] = [:]
 
@@ -41,15 +42,17 @@ class WearablesViewModel: ObservableObject {
     self.hasMockDevice = false
     self.registrationState = wearables.registrationState
 
+    // Set up device stream immediately to handle MockDevice events
+    setupDeviceStreamTask = Task {
+      await setupDeviceStream()
+    }
+
     registrationTask = Task {
       for await registrationState in wearables.registrationStateStream() {
         let previousState = self.registrationState
         self.registrationState = registrationState
         if self.showGettingStartedSheet == false && registrationState == .registered && previousState == .registering {
           self.showGettingStartedSheet = true
-        }
-        if registrationState == .registered {
-          await setupDeviceStream()
         }
       }
     }
@@ -58,6 +61,7 @@ class WearablesViewModel: ObservableObject {
   deinit {
     registrationTask?.cancel()
     deviceStreamTask?.cancel()
+    setupDeviceStreamTask?.cancel()
   }
 
   private func setupDeviceStream() async {
@@ -103,18 +107,26 @@ class WearablesViewModel: ObservableObject {
 
   func connectGlasses() {
     guard registrationState != .registering else { return }
-    do {
-      try wearables.startRegistration()
-    } catch {
-      showError(error.description)
+    Task { @MainActor in
+      do {
+        try await wearables.startRegistration()
+      } catch let error as RegistrationError {
+        showError(error.description)
+      } catch {
+        showError(error.localizedDescription)
+      }
     }
   }
 
   func disconnectGlasses() {
-    do {
-      try wearables.startUnregistration()
-    } catch {
-      showError(error.description)
+    Task { @MainActor in
+      do {
+        try await wearables.startUnregistration()
+      } catch let error as UnregistrationError {
+        showError(error.description)
+      } catch {
+        showError(error.localizedDescription)
+      }
     }
   }
 

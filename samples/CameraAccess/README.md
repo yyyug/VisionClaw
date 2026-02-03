@@ -7,7 +7,6 @@ A sample iOS application demonstrating integration with Meta Wearables Device Ac
 - Connect to Meta AI glasses
 - Stream camera feed from the device
 - Capture photos from glasses
-- Timer-based streaming sessions
 - Share captured photos
 
 ## Prerequisites
@@ -35,7 +34,6 @@ A sample iOS application demonstrating integration with Meta Wearables Device Ac
 1. Press the "Connect" button to complete app registration.
 1. Once connected, the camera stream from the device will be displayed
 1. Use the on-screen controls to:
-   - Set stream time limits
    - Capture photos
    - View and save captured photos
    - Disconnect from the device

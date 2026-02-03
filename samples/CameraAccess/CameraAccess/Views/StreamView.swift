@@ -50,15 +50,6 @@ struct StreamView: View {
         ControlsView(viewModel: viewModel)
       }
       .padding(.all, 24)
-      // Timer display area with fixed height
-      VStack {
-        Spacer()
-        if viewModel.activeTimeLimit.isTimeLimited && viewModel.remainingTime > 0 {
-          Text("Streaming ending in \(viewModel.remainingTime.formattedCountdown)")
-            .font(.system(size: 15))
-            .foregroundColor(.white)
-        }
-      }
     }
     .onDisappear {
       Task {
@@ -95,15 +86,6 @@ struct ControlsView: View {
         Task {
           await viewModel.stopSession()
         }
-      }
-
-      // Timer button
-      CircleButton(
-        icon: "timer",
-        text: viewModel.activeTimeLimit != .noLimit ? viewModel.activeTimeLimit.displayText : nil
-      ) {
-        let nextTimeLimit = viewModel.activeTimeLimit.next
-        viewModel.setTimeLimit(nextTimeLimit)
       }
 
       // Photo button
