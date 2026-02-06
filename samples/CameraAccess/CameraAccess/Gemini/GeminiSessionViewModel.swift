@@ -76,6 +76,9 @@ class GeminiSessionViewModel: ObservableObject {
       }
     }
 
+    // New OpenClaw session per Gemini session (fresh context, no stale memory)
+    openClawBridge.resetSession()
+
     // Wire tool call handling
     toolCallRouter = ToolCallRouter(bridge: openClawBridge)
 

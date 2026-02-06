@@ -5,11 +5,23 @@ class OpenClawBridge: ObservableObject {
   @Published var lastToolCallStatus: ToolCallStatus = .idle
 
   private let session: URLSession
+  private var sessionKey: String
 
   init() {
     let config = URLSessionConfiguration.default
     config.timeoutIntervalForRequest = 120
     self.session = URLSession(configuration: config)
+    self.sessionKey = OpenClawBridge.newSessionKey()
+  }
+
+  func resetSession() {
+    sessionKey = OpenClawBridge.newSessionKey()
+    NSLog("[OpenClaw] New session: %@", sessionKey)
+  }
+
+  private static func newSessionKey() -> String {
+    let ts = ISO8601DateFormatter().string(from: Date())
+    return "agent:main:glass:\(ts)"
   }
 
   // MARK: - Agent Chat (session continuity via x-openclaw-session-key header)
@@ -29,7 +41,7 @@ class OpenClawBridge: ObservableObject {
     request.httpMethod = "POST"
     request.setValue("Bearer \(GeminiConfig.openClawGatewayToken)", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.setValue("agent:main:glass:default", forHTTPHeaderField: "x-openclaw-session-key")
+    request.setValue(sessionKey, forHTTPHeaderField: "x-openclaw-session-key")
 
     let body: [String: Any] = [
       "model": "openclaw",
