@@ -9,7 +9,7 @@ A sample iOS application demonstrating integration with Meta Wearables Device Ac
 - Capture photos from glasses
 - Share captured photos
 - **v1.0: Gemini Live AI assistant** - real-time voice + vision conversation through glasses
-- **v2.0 (planned): OpenClaw integration** - agentic actions via Gemini Live tool-calling
+- **v2.0: OpenClaw integration** - agentic actions via Gemini Live tool-calling (web search, messaging, task delegation)
 
 ## Prerequisites
 
@@ -70,167 +70,127 @@ iOS App -> Speaker + Transcript UI
 - Audio: PCM 16kHz mono input, PCM 24kHz mono output
 - Session limit: 2 min (audio+video), 15 min (audio-only)
 
-### v2.0 - OpenClaw Integration (planned)
+### v2.0 - OpenClaw Integration (current)
 
 ```
 Meta Ray-Ban Glasses
        |
-       | camera + mic
+       | camera frames (24fps) + mic audio
        v
 iOS App (CameraAccess)
        |
-       | audio + video frames
+       | video (1fps JPEG) + audio (PCM 16kHz)
        v
 Gemini Live API (WebSocket)
-  - Real-time voice conversation
-  - Sees through glasses camera
-  - Has OpenClaw tools declared as function declarations
+  - Real-time voice + vision
+  - Tool declarations in setup message
        |
-       | toolCall (e.g. send_message, web_search, add_reminder)
+       | toolCall { functionCalls: [{id, name, args}] }
        v
-iOS App (Bridge Layer)
-  - Intercepts toolCall from Gemini
-  - Forwards to OpenClaw Gateway via HTTP
+iOS App (ToolCallRouter)
+  - Routes tool calls to OpenClaw via HTTP
+  - Tracks in-flight calls for cancellation
        |
-       | POST /hooks/agent
+       | web_search -> POST /tools/invoke (sync, ~5s)
+       | delegate_task, send_message -> POST /v1/chat/completions (sync, up to 120s)
        v
-OpenClaw Gateway (localhost:18789)
-  - Processes task (messaging, web, smart home, etc.)
-  - Has access to 56+ skills and all connected channels
-  - Returns result
+OpenClaw Gateway (LAN IP:18789)
+  - 56+ skills, all connected channels
+  - Returns result synchronously
        |
-       | result
        v
-iOS App (Bridge Layer)
-  - Sends BidiGenerateContentToolResponse back to Gemini
-       |
-       | toolResponse
-       v
-Gemini Live API
-  - Speaks the result to user through glasses speaker
+iOS App -> sendToolResponse back to Gemini -> Gemini speaks result
 ```
 
-**Key concept:** Gemini Live = real-time frontdesk agent (voice + vision), OpenClaw = gateway agent (async actions on everything).
+**Key concept:** Gemini Live = real-time frontdesk agent (voice + vision), OpenClaw = gateway agent (actions on everything).
 
-## v2.0 Research & Design
+**Tools available:**
+| Tool | Type | Description |
+|------|------|-------------|
+| `web_search` | Blocking | Search the web via Brave Search, returns results immediately |
+| `delegate_task` | NON_BLOCKING | Complex/long-running tasks (research, analysis, drafts) |
+| `send_message` | NON_BLOCKING | Send messages via WhatsApp, Telegram, iMessage, Slack, etc. |
 
-### Gemini Live Tool Calling
+## v2.0 Setup (OpenClaw)
 
-Gemini Live API supports function calling via WebSocket. All functions must be declared in the `BidiGenerateContentSetup` message:
+### Prerequisites
+
+1. OpenClaw running on your Mac with gateway enabled
+2. iOS device and Mac on the same local network
+
+### OpenClaw Configuration
+
+In `~/.openclaw/openclaw.json`, ensure these settings:
 
 ```json
 {
-  "setup": {
-    "model": "models/gemini-2.5-flash-native-audio-preview-12-2025",
-    "tools": [{
-      "functionDeclarations": [
-        {
-          "name": "send_message",
-          "description": "Send a message to someone via messaging app",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "to": { "type": "string", "description": "Recipient name or identifier" },
-              "message": { "type": "string", "description": "Message content" },
-              "channel": { "type": "string", "enum": ["whatsapp", "telegram", "imessage", "slack", "discord"] }
-            },
-            "required": ["to", "message"]
-          },
-          "behavior": "NON_BLOCKING"
-        },
-        {
-          "name": "web_search",
-          "description": "Search the web for information",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "query": { "type": "string", "description": "Search query" }
-            },
-            "required": ["query"]
-          }
-        },
-        {
-          "name": "delegate_task",
-          "description": "Delegate a complex or long-running task to the personal AI assistant",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "task": { "type": "string", "description": "Task description" },
-              "deliver": { "type": "boolean", "description": "Whether to send result to a chat channel" },
-              "channel": { "type": "string", "description": "Channel to deliver result to" }
-            },
-            "required": ["task"]
-          },
-          "behavior": "NON_BLOCKING"
-        }
-      ]
-    }]
+  "gateway": {
+    "port": 18789,
+    "bind": "lan",
+    "auth": { "mode": "token", "token": "YOUR_GATEWAY_TOKEN" },
+    "http": {
+      "endpoints": {
+        "chatCompletions": { "enabled": true }
+      }
+    }
+  },
+  "hooks": {
+    "enabled": true,
+    "token": "YOUR_HOOK_TOKEN"
+  },
+  "tools": {
+    "web": {
+      "search": { "enabled": true, "apiKey": "YOUR_BRAVE_API_KEY" }
+    }
   }
 }
 ```
 
-**Tool call flow:**
-1. Model sends `toolCall` message: `{ "toolCall": { "functionCalls": [{ "id": "call-123", "name": "send_message", "args": { "to": "Mom", "message": "On my way!" } }] } }`
-2. iOS app intercepts, forwards to OpenClaw
-3. iOS app sends back `toolResponse`: `{ "toolResponse": { "functionResponses": [{ "id": "call-123", "response": { "result": "Message sent" } }] } }`
-4. Gemini speaks the result
+Key points:
+- `bind: "lan"` exposes the gateway on `0.0.0.0` so the iPhone can reach it
+- `chatCompletions.enabled: true` enables the synchronous `/v1/chat/completions` endpoint (disabled by default)
+- Brave Search API key is needed for `web_search` tool
+- Start/restart gateway: `openclaw gateway restart`
 
-**Blocking vs Non-blocking:**
-- Default (blocking): Gemini pauses until tool responds
-- `"behavior": "NON_BLOCKING"`: Gemini continues talking ("Let me work on that...")
-  - `INTERRUPT` scheduling: stop current speech, speak result immediately
-  - `WHEN_IDLE` scheduling: speak result after current response
-  - `SILENT` scheduling: process result silently
+### iOS App Configuration
 
-**Note:** NON_BLOCKING has a known issue where Gemini may hallucinate/speculate before tool results arrive. Use blocking for critical actions, NON_BLOCKING for background tasks.
+In [GeminiConfig.swift](samples/CameraAccess/CameraAccess/Gemini/GeminiConfig.swift), update:
 
-### OpenClaw Gateway API
+```swift
+static let openClawHost = "http://YOUR_MAC_LAN_IP"  // e.g. "http://192.168.0.117"
+static let openClawPort = 18789
+static let openClawGatewayToken = "YOUR_GATEWAY_TOKEN"  // must match gateway.auth.token
+```
 
-OpenClaw exposes three integration points:
+`Info.plist` already has `NSAllowsLocalNetworking = true` for HTTP to local network IPs.
 
-#### HTTP Webhook (recommended for iOS)
+## OpenClaw Gateway API (as used)
+
+### POST /v1/chat/completions (agent tasks)
+
+Used for `delegate_task` and `send_message`. Synchronous -- waits for the OpenClaw agent to complete and returns the full result.
 
 ```
-POST http://localhost:18789/hooks/agent
-Authorization: Bearer <hook-token>
+POST http://<mac-ip>:18789/v1/chat/completions
+Authorization: Bearer <gateway-token>
 Content-Type: application/json
 
 {
-  "message": "Send a WhatsApp message to Mom saying I'm on my way",
-  "name": "Glass Voice",
-  "sessionKey": "glass:default",
-  "wakeMode": "now",
-  "deliver": true,
-  "channel": "last",
-  "timeoutSeconds": 120
+  "model": "openclaw",
+  "messages": [{ "role": "user", "content": "Research the best coffee shops in Boulder" }],
+  "stream": false
 }
 ```
 
-Returns `202` with `{ "runId": "..." }` (async).
+Returns OpenAI-compatible response: `{ "choices": [{ "message": { "content": "..." } }] }`
 
-**Configuration** (in `~/.openclaw/config.json`):
-```json
-{
-  "hooks": {
-    "enabled": true,
-    "token": "your-secret-token",
-    "path": "/hooks"
-  }
-}
-```
+### POST /tools/invoke (single tool)
 
-#### WebSocket Protocol (for real-time streaming)
-
-- Full bidirectional, protocol v3
-- URL: `ws://127.0.0.1:18789`
-- Device pairing, event subscriptions
-- Request/response with message IDs
-
-#### HTTP Tools Invoke (for single tool calls)
+Used for `web_search`. Synchronous, returns the tool result directly.
 
 ```
-POST http://localhost:18789/tools/invoke
-Authorization: Bearer <token>
+POST http://<mac-ip>:18789/tools/invoke
+Authorization: Bearer <gateway-token>
 Content-Type: application/json
 
 {
@@ -241,60 +201,47 @@ Content-Type: application/json
 }
 ```
 
-### OpenClaw Capabilities
+## Gemini Live Tool Calling
 
-OpenClaw has 56+ skills and 31+ extensions covering:
+Tools are declared in the WebSocket setup message. The model sends `toolCall` messages (top-level, not inside `serverContent`), the app routes them to OpenClaw, and sends back `toolResponse`.
 
-| Category | Examples |
-|----------|----------|
-| **Messaging** | WhatsApp, Telegram, Slack, Discord, iMessage, Signal, Teams, Matrix |
-| **Web** | Search, fetch, full browser control |
-| **Productivity** | Apple Notes, Reminders, Things, Obsidian, Notion, Trello |
-| **Media** | Image gen (OpenAI), whisper transcription, TTS, camera |
-| **Smart Home** | Via node.invoke + system.run on macOS/iOS nodes |
-| **Developer** | GitHub, coding agent, tmux |
-| **Music** | Spotify player |
-| **Other** | 1Password, weather, food ordering, location-based services |
+**Blocking vs Non-blocking:**
+- Default (blocking): Gemini pauses until tool responds (`web_search`)
+- `"behavior": "NON_BLOCKING"`: Gemini continues talking while tool executes (`delegate_task`, `send_message`)
 
-### Implementation Plan
+**Note:** NON_BLOCKING has a known issue where Gemini may speculate before tool results arrive.
 
-#### Phase 1: Basic tool bridge
-1. Add `tools` field to Gemini setup message with function declarations
-2. Handle `toolCall` messages in `GeminiLiveService.handleMessage()`
-3. Create `OpenClawBridge` class for HTTP calls to gateway
-4. Send `toolResponse` back to Gemini with results
-5. Start with 2-3 tools: `delegate_task`, `send_message`, `web_search`
+## Implementation Status
 
-#### Phase 2: Rich tool set
-6. Add more specific tool declarations (reminders, notes, smart home, etc.)
-7. Implement NON_BLOCKING behavior for long-running tasks
-8. Add tool call status UI overlay (show what's happening)
+### Phase 1: Basic tool bridge -- COMPLETE
+1. Tool declarations in Gemini setup message
+2. `toolCall` / `toolCallCancellation` message handling in GeminiLiveService
+3. OpenClawBridge HTTP client (two endpoints: /v1/chat/completions + /tools/invoke)
+4. ToolCallRouter dispatches tool calls and sends toolResponse back to Gemini
+5. Three tools working: `web_search`, `delegate_task`, `send_message`
+6. Tool call status UI overlay (spinner, checkmark, error states)
 
-#### Phase 3: Session continuity
-9. Use Gemini session resumption for longer conversations
-10. Use consistent `sessionKey` for OpenClaw to maintain multi-turn context
-11. OpenClaw proactive callbacks (task completed, need input)
+### Phase 2: Rich tool set -- PLANNED
+- Add more specific tool declarations (reminders, notes, smart home, etc.)
+- Proactive tool use (Gemini decides when to use tools based on context)
+
+### Phase 3: Session continuity -- PLANNED
+- Gemini session resumption for longer conversations
+- Consistent OpenClaw sessionKey for multi-turn context
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `Gemini/GeminiConfig.swift` | API keys, model config, system instruction |
-| `Gemini/GeminiLiveService.swift` | WebSocket client, message handling, tool call routing |
+| `Gemini/GeminiConfig.swift` | API keys, model config, system instruction, OpenClaw config |
+| `Gemini/GeminiLiveService.swift` | WebSocket client, message handling, tool call callbacks |
 | `Gemini/AudioManager.swift` | Audio capture (Float32 tap, 4096 buffer, 100ms chunks) + playback |
-| `Gemini/GeminiSessionViewModel.swift` | Session orchestration, transcript state |
-| `Views/Components/GeminiOverlayView.swift` | Transcript UI, status bar, indicators |
+| `Gemini/GeminiSessionViewModel.swift` | Session orchestration, transcript state, tool call wiring |
+| `OpenClaw/ToolCallModels.swift` | Data types: GeminiFunctionCall, ToolResult, ToolCallStatus, ToolDeclarations |
+| `OpenClaw/OpenClawBridge.swift` | HTTP client for OpenClaw gateway (/v1/chat/completions + /tools/invoke) |
+| `OpenClaw/ToolCallRouter.swift` | Routes Gemini tool calls to OpenClaw, manages in-flight tasks |
+| `Views/Components/GeminiOverlayView.swift` | Transcript UI, ToolCallStatusView, speaking indicator |
 | `Views/StreamView.swift` | Main streaming view |
-
-### References
-
-- [Gemini Live API - Tool Use](https://ai.google.dev/gemini-api/docs/live-tools)
-- [Gemini Live API - WebSocket Reference](https://ai.google.dev/api/live)
-- [Gemini Live API - Capabilities Guide](https://ai.google.dev/gemini-api/docs/live-guide)
-- [Gemini Live - Function Calling Cookbook](https://deepwiki.com/google-gemini/cookbook/6.2-liveapi-tools-and-function-calling)
-- [OpenClaw Webhook API](https://docs.openclaw.ai/automation/webhook)
-- [OpenClaw Gateway Protocol](https://docs.openclaw.ai/gateway/protocol)
-- [OpenClaw iOS Node](https://docs.openclaw.ai/platforms/ios)
 
 ## Troubleshooting
 
