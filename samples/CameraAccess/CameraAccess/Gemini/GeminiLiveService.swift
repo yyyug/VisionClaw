@@ -7,16 +7,6 @@ enum GeminiConnectionState: Equatable {
   case settingUp
   case ready
   case error(String)
-
-  var displayText: String {
-    switch self {
-    case .disconnected: return "Disconnected"
-    case .connecting: return "Connecting..."
-    case .settingUp: return "Setting up..."
-    case .ready: return "Ready"
-    case .error(let msg): return "Error: \(msg)"
-    }
-  }
 }
 
 @MainActor
@@ -27,9 +17,11 @@ class GeminiLiveService: ObservableObject {
   var onAudioReceived: ((Data) -> Void)?
   var onTurnComplete: (() -> Void)?
   var onInterrupted: (() -> Void)?
+  var onDisconnected: ((String?) -> Void)?
 
   private var webSocketTask: URLSessionWebSocketTask?
   private var receiveTask: Task<Void, Never>?
+  private var setupContinuation: CheckedContinuation<Bool, Never>?
   private let urlSession: URLSession
   private let sendQueue = DispatchQueue(label: "gemini.send", qos: .userInitiated)
 
@@ -39,10 +31,12 @@ class GeminiLiveService: ObservableObject {
     self.urlSession = URLSession(configuration: config)
   }
 
-  func connect() async {
+  /// Connects to Gemini Live API and waits for setupComplete or error.
+  /// Returns true if setup succeeded, false otherwise.
+  func connect() async -> Bool {
     guard let url = GeminiConfig.websocketURL() else {
       connectionState = .error("No API key configured")
-      return
+      return false
     }
 
     connectionState = .connecting
@@ -50,8 +44,27 @@ class GeminiLiveService: ObservableObject {
     webSocketTask?.resume()
 
     connectionState = .settingUp
-    await sendSetupMessage()
+    sendSetupMessage()
     startReceiving()
+
+    // Wait for setupComplete or error (with 15s timeout)
+    let setupOk = await withCheckedContinuation { continuation in
+      self.setupContinuation = continuation
+      Task {
+        try? await Task.sleep(nanoseconds: 15_000_000_000)
+        if let cont = self.setupContinuation {
+          self.setupContinuation = nil
+          cont.resume(returning: false)
+          await MainActor.run {
+            if self.connectionState == .settingUp {
+              self.connectionState = .error("Setup timed out")
+            }
+          }
+        }
+      }
+    }
+
+    return setupOk
   }
 
   func disconnect() {
@@ -61,6 +74,11 @@ class GeminiLiveService: ObservableObject {
     webSocketTask = nil
     connectionState = .disconnected
     isModelSpeaking = false
+    // Cancel any pending setup wait
+    if let cont = setupContinuation {
+      setupContinuation = nil
+      cont.resume(returning: false)
+    }
   }
 
   func sendAudio(data: Data) {
@@ -98,7 +116,7 @@ class GeminiLiveService: ObservableObject {
 
   // MARK: - Private
 
-  private func sendSetupMessage() async {
+  private func sendSetupMessage() {
     let setup: [String: Any] = [
       "setup": [
         "model": GeminiConfig.model,
@@ -153,12 +171,15 @@ class GeminiLiveService: ObservableObject {
           }
         } catch {
           if !Task.isCancelled {
+            let reason = error.localizedDescription
+            #if DEBUG
+            NSLog("[GeminiLive] Receive error: \(reason)")
+            #endif
             await MainActor.run {
               self.connectionState = .disconnected
+              self.isModelSpeaking = false
+              self.onDisconnected?(reason)
             }
-            #if DEBUG
-            NSLog("[GeminiLive] Receive error: \(error.localizedDescription)")
-            #endif
           }
           break
         }
@@ -172,9 +193,32 @@ class GeminiLiveService: ObservableObject {
       return
     }
 
+    #if DEBUG
+    // Log message keys for debugging
+    let keys = json.keys.joined(separator: ", ")
+    NSLog("[GeminiLive] Received message keys: \(keys)")
+    #endif
+
     // Setup complete
     if json["setupComplete"] != nil {
       connectionState = .ready
+      if let cont = setupContinuation {
+        setupContinuation = nil
+        cont.resume(returning: true)
+      }
+      return
+    }
+
+    // GoAway - server will close soon
+    if let goAway = json["goAway"] as? [String: Any] {
+      let timeLeft = goAway["timeLeft"] as? [String: Any]
+      let seconds = timeLeft?["seconds"] as? Int ?? 0
+      #if DEBUG
+      NSLog("[GeminiLive] GoAway received, time left: \(seconds)s")
+      #endif
+      connectionState = .disconnected
+      isModelSpeaking = false
+      onDisconnected?("Server closing connection (time left: \(seconds)s)")
       return
     }
 

@@ -45,6 +45,16 @@ class GeminiSessionViewModel: ObservableObject {
 
     geminiService.onTurnComplete = nil
 
+    // Handle unexpected disconnection
+    geminiService.onDisconnected = { [weak self] reason in
+      guard let self else { return }
+      Task { @MainActor in
+        guard self.isGeminiActive else { return }
+        self.stopSession()
+        self.errorMessage = "Connection lost: \(reason ?? "Unknown error")"
+      }
+    }
+
     // Observe service state
     stateObservation = Task { [weak self] in
       guard let self else { return }
@@ -65,12 +75,22 @@ class GeminiSessionViewModel: ObservableObject {
       return
     }
 
-    // Connect to Gemini
-    await geminiService.connect()
+    // Connect to Gemini and wait for setupComplete
+    let setupOk = await geminiService.connect()
 
-    if case .error(let msg) = geminiService.connectionState {
+    if !setupOk {
+      let msg: String
+      if case .error(let err) = geminiService.connectionState {
+        msg = err
+      } else {
+        msg = "Failed to connect to Gemini"
+      }
       errorMessage = msg
+      geminiService.disconnect()
+      stateObservation?.cancel()
+      stateObservation = nil
       isGeminiActive = false
+      connectionState = .disconnected
       return
     }
 
@@ -80,7 +100,10 @@ class GeminiSessionViewModel: ObservableObject {
     } catch {
       errorMessage = "Mic capture failed: \(error.localizedDescription)"
       geminiService.disconnect()
+      stateObservation?.cancel()
+      stateObservation = nil
       isGeminiActive = false
+      connectionState = .disconnected
       return
     }
 
