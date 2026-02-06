@@ -10,6 +10,11 @@ class AudioManager {
 
   private let outputFormat: AVAudioFormat
 
+  // Accumulate resampled PCM into ~100ms chunks before sending
+  private let sendQueue = DispatchQueue(label: "audio.accumulator")
+  private var accumulatedData = Data()
+  private let minSendBytes = 3200  // 100ms at 16kHz mono Int16 = 1600 frames * 2 bytes
+
   init() {
     self.outputFormat = AVAudioFormat(
       commonFormat: .pcmFormatInt16,
@@ -58,6 +63,8 @@ class AudioManager {
 
     NSLog("[Audio] Needs resample: %@", needsResample ? "YES" : "NO")
 
+    sendQueue.async { self.accumulatedData = Data() }
+
     var converter: AVAudioConverter?
     if needsResample {
       let resampleFormat = AVAudioFormat(
@@ -70,10 +77,11 @@ class AudioManager {
     }
 
     var tapCount = 0
-    inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputNativeFormat) { [weak self] buffer, _ in
+    inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputNativeFormat) { [weak self] buffer, _ in
       guard let self else { return }
 
       tapCount += 1
+      let pcmData: Data
 
       if let converter {
         let resampleFormat = AVAudioFormat(
@@ -83,24 +91,36 @@ class AudioManager {
           interleaved: false
         )!
         guard let resampled = self.convertBuffer(buffer, using: converter, targetFormat: resampleFormat) else {
-          if tapCount <= 5 { NSLog("[Audio] Resample failed for tap #%d", tapCount) }
+          if tapCount <= 3 { NSLog("[Audio] Resample failed for tap #%d", tapCount) }
           return
         }
-        let data = self.float32BufferToInt16Data(resampled)
-        if tapCount <= 5 {
+        pcmData = self.float32BufferToInt16Data(resampled)
+        if tapCount <= 3 {
           let rms = self.computeRMS(resampled)
-          NSLog("[Audio] Tap #%d: resampled frames=%d dataBytes=%d rms=%.6f",
-                tapCount, resampled.frameLength, data.count, rms)
+          NSLog("[Audio] Tap #%d: native=%d frames -> resampled=%d frames, %d bytes, rms=%.4f",
+                tapCount, buffer.frameLength, resampled.frameLength, pcmData.count, rms)
         }
-        self.onAudioCaptured?(data)
       } else {
-        let data = self.float32BufferToInt16Data(buffer)
-        if tapCount <= 5 {
+        pcmData = self.float32BufferToInt16Data(buffer)
+        if tapCount <= 3 {
           let rms = self.computeRMS(buffer)
-          NSLog("[Audio] Tap #%d: frames=%d dataBytes=%d rms=%.6f",
-                tapCount, buffer.frameLength, data.count, rms)
+          NSLog("[Audio] Tap #%d: %d frames, %d bytes, rms=%.4f",
+                tapCount, buffer.frameLength, pcmData.count, rms)
         }
-        self.onAudioCaptured?(data)
+      }
+
+      // Accumulate into ~100ms chunks before sending to Gemini
+      self.sendQueue.async {
+        self.accumulatedData.append(pcmData)
+        if self.accumulatedData.count >= self.minSendBytes {
+          let chunk = self.accumulatedData
+          self.accumulatedData = Data()
+          if tapCount <= 3 {
+            NSLog("[Audio] Sending chunk: %d bytes (~%dms)",
+                  chunk.count, chunk.count / 32)  // 16kHz * 2 bytes = 32 bytes/ms
+          }
+          self.onAudioCaptured?(chunk)
+        }
       }
     }
 
@@ -151,6 +171,14 @@ class AudioManager {
     audioEngine.stop()
     audioEngine.detach(playerNode)
     isCapturing = false
+    // Flush any remaining accumulated audio
+    sendQueue.async {
+      if !self.accumulatedData.isEmpty {
+        let chunk = self.accumulatedData
+        self.accumulatedData = Data()
+        self.onAudioCaptured?(chunk)
+      }
+    }
   }
 
   // MARK: - Private helpers
