@@ -16,7 +16,7 @@ jobs:
 
       - name: Select Xcode 16.2 (Swift 6.2)
         # On GitHub macos-15 runners, Xcode 16.2 is located at this path
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
 
       # 1. CREATE SECRETS.SWIFT
       - name: Create Secrets.swift
