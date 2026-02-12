@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14 # Stable runner for Xcode 16.1
+    runs-on: macos-14 # Stable environment for Xcode 16.1
     
     steps:
       - name: Checkout repository
@@ -38,47 +38,54 @@ jobs:
               f.write(content)
           "
 
-      # 2. NUCLEAR PATCH: FORCE SWIFT 5 & FIX CONCURRENCY
-      # This script rewrites the project file to downgrade the language mode
-      # and adds safety decorators to the problematic code.
-      - name: Nuclear Patch Project
+      # 2. FUZZY REGEX PATCHING (Fixes the source of Exit 65)
+      - name: Regex Patch Source Code
         run: |
           python3 -c "
           import os, re
 
-          def replace_in_file(path, pattern, subst):
-              if os.path.exists(path):
-                  with open(path, 'r') as f:
-                      content = f.read()
-                  new_content = re.sub(pattern, subst, content)
-                  with open(path, 'w') as f:
+          def fuzzy_patch(file_path, pattern, replacement):
+              if not os.path.exists(file_path):
+                  print(f'Missing: {file_path}')
+                  return
+              with open(file_path, 'r') as f:
+                  content = f.read()
+              
+              # Find and replace using Regex (handles variations in spacing)
+              if re.search(pattern, content):
+                  new_content = re.sub(pattern, replacement, content)
+                  with open(file_path, 'w') as f:
                       f.write(new_content)
-                  print(f'Patched {path}')
+                  print(f'Successfully patched {file_path}')
+              else:
+                  print(f'Pattern not found in {file_path}')
 
-          # Step A: Force Project to Swift 5 and Minimal Concurrency
-          pbx_path = 'samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj'
-          replace_in_file(pbx_path, r'SWIFT_VERSION = 6.0;', 'SWIFT_VERSION = 5.0;')
-          replace_in_file(pbx_path, r'SWIFT_STRICT_CONCURRENCY = \"?complete\"?;', 'SWIFT_STRICT_CONCURRENCY = minimal;')
-          
-          # Step B: Patch ToolCallModels.swift (Static property safety)
-          tool_path = 'samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift'
-          replace_in_file(tool_path, r'static let execute', '@MainActor static let execute')
+          # Fix A: ToolCallModels.swift - Add @MainActor to static properties
+          fuzzy_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift', 
+                      r'static\s+let\s+execute\s*:\s*\[String\s*:\s*Any\]', 
+                      '@MainActor static let execute: [String: Any]')
 
-          # Step C: Patch GeminiLiveService.swift (WebSocket thread safety)
-          gemini_path = 'samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift'
-          replace_in_file(gemini_path, 
-                          r'private class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate', 
-                          'private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
+          # Fix B: GeminiLiveService.swift - Add @unchecked Sendable to WebSocket
+          fuzzy_patch('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift', 
+                      r'class\s+WebSocketDelegate\s*:\s*NSObject\s*,\s*URLSessionWebSocketDelegate', 
+                      'final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
           "
 
-      # 3. INSTALL DEPENDENCIES
+      # 3. OVERRIDE PROJECT SETTINGS
+      - name: Force Minimal Concurrency
+        run: |
+          PBX="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
+          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBX"
+          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = targeted/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBX"
+
+      # 4. INSTALL DEPENDENCIES
       - name: Install Dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 4. BUILD APP (UNSIGNED)
+      # 5. BUILD APP (UNSIGNED)
       - name: Build App
         run: |
           xcodebuild build \
@@ -90,10 +97,11 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            SWIFT_VERSION=5.0 \
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
-            OTHER_SWIFT_FLAGS="-suppress-warnings"
+            OTHER_SWIFT_FLAGS="-suppress-warnings -Xfrontend -disable-implicit-concurrency-module-import"
 
-      # 5. PACKAGE INTO IPA
+      # 6. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | grep "Debug-iphoneos" | head -n 1)
@@ -105,7 +113,7 @@ jobs:
           cp -r "$APP_PATH" Payload/
           zip -r VisionClaw_CameraAccess.ipa Payload
 
-      # 6. UPLOAD ARTIFACT
+      # 7. UPLOAD ARTIFACT
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
