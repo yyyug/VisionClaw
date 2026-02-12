@@ -7,15 +7,15 @@ on:
 
 jobs:
   build:
-    # macOS 15 is the best choice for the latest Xcode 16.2 tools
+    # macOS 15 is required for the latest Xcode 16.2
     runs-on: macos-15
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Xcode
-        # Switching to Xcode 16.2 to match the Meta SDK's Swift 6.2 requirement
+      - name: Select Xcode 16.2 (Swift 6.2)
+        # On GitHub macos-15 runners, Xcode 16.2 is located at this path
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
       # 1. CREATE SECRETS.SWIFT
@@ -44,7 +44,7 @@ jobs:
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 3. BUILD APP
+      # 3. BUILD APP (WITH SWIFT 6 CONCURRENCY FIX)
       - name: Build App
         run: |
           xcodebuild build \
@@ -56,6 +56,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            SWIFT_VERSION=6.0 \
             STRICT_CONCURRENCY=minimal \
             OTHER_SWIFT_FLAGS="-suppress-warnings"
 
