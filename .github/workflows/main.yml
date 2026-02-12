@@ -7,17 +7,17 @@ on:
 
 jobs:
   build:
-    # macOS 15 includes the Xcode 16.2 toolchain we need
+    # We must use macOS 15 to access Xcode 16.2
     runs-on: macos-15
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16.2 (Swift 6.2)
+      - name: Select Xcode 16.2 (Required for Swift 6.2)
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
-      # 1. CREATE SECRETS.SWIFT (Cleaned)
+      # 1. CREATE SECRETS.SWIFT
       - name: Create Secrets.swift
         env:
           GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -39,7 +39,8 @@ jobs:
               f.write(content)
           "
 
-      # 2. SOURCE PATCHING (Sendable & Concurrency Fixes)
+      # 2. SURGICAL PATCHING FOR SENDABLE CONFORMANCE
+      # This fixes the 'type T does not conform to Sendable' error
       - name: Patch Source Code
         run: |
           python3 -c "
@@ -52,32 +53,35 @@ jobs:
                   with open(path, 'w') as f: f.write(re.sub(pattern, replacement, content))
                   print(f'Patched: {path}')
 
-          # Fix A: ToolCallModels static property safety
+          # Fix A: Mark main ViewModels as @unchecked Sendable 
+          # This allows them to be used in the Meta SDK's ListenerStore<T>
+          vm_files = [
+              'samples/CameraAccess/CameraAccess/ViewModels/WearablesViewModel.swift',
+              'samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift',
+              'samples/CameraAccess/CameraAccess/Gemini/GeminiSessionViewModel.swift'
+          ]
+          for path in vm_files:
+              apply_patch(path, r'class\s+(\w+)\s*:\s*ObservableObject', r'class \1: ObservableObject, @unchecked Sendable')
+
+          # Fix B: ToolCallModels static property safety
           apply_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift',
                       r'static\s+let\s+execute', 
                       '@MainActor static let execute')
 
-          # Fix B: GeminiLiveService WebSocket thread safety
+          # Fix C: GeminiLiveService WebSocket thread safety
           apply_patch('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift',
                       r'class\s+WebSocketDelegate\s*:\s*NSObject\s*,\s*URLSessionWebSocketDelegate', 
                       'final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
-
-          # Fix C: Mark ViewModels as Sendable for Meta DAT ListenerStore
-          vm_files = [
-              'samples/CameraAccess/CameraAccess/ViewModels/WearablesViewModel.swift',
-              'samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift'
-          ]
-          for path in vm_files:
-              apply_patch(path, r'class\s+(\w+)\s*:\s*ObservableObject', r'class \1: ObservableObject, @unchecked Sendable')
           "
 
-      # 3. OVERRIDE PROJECT SETTINGS (Critical for iOS 17 targeting)
-      - name: Force Project Target to iOS 17
+      # 3. OVERRIDE PROJECT SETTINGS (Match Meta SDK version)
+      - name: Force Project Settings
         run: |
           PROJ="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
-          # Physically set project to iOS 17 and minimal concurrency
+          # Set to Swift 6 to match MWDATCore SDK, but use 'minimal' to ignore internal warnings
+          sed -i '' 's/SWIFT_VERSION = [0-9.]*;/SWIFT_VERSION = 6.0;/g' "$PROJ"
+          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = [a-z]*;/SWIFT_STRICT_CONCURRENCY = minimal;/g' "$PROJ"
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 17.0;/g' "$PROJ"
-          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PROJ"
 
       # 4. INSTALL DEPENDENCIES
       - name: Install Dependencies
@@ -86,9 +90,7 @@ jobs:
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 5. BUILD APP (FORCED DEVICE SDK)
-      # -sdk iphoneos: tells Xcode to use the physical device SDK (avoids simulator 18.2 check)
-      # IPHONEOS_DEPLOYMENT_TARGET=17.0: forces build compatibility for your device
+      # 5. BUILD APP (UNSIGNED DEVICE BUILD)
       - name: Build App
         run: |
           xcodebuild build \
@@ -101,8 +103,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
-            SWIFT_VERSION=6.0 \
-            OTHER_SWIFT_FLAGS="-suppress-warnings -Xfrontend -disable-implicit-concurrency-module-import"
+            OTHER_SWIFT_FLAGS="-suppress-warnings"
 
       # 6. PACKAGE INTO IPA
       - name: Package into IPA
