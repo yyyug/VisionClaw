@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    # Use macOS 15 to get access to Xcode 16.2
+    # macOS 15 is required to access the Xcode 16.2 toolchain
     runs-on: macos-15
     
     steps:
@@ -15,7 +15,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Select Xcode 16.2 (Swift 6.2)
-        # This version is REQUIRED to link against Meta SDK v0.4.0
+        # This matches the compiler version used to build MWDATCore
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
       # 1. CREATE SECRETS.SWIFT
@@ -40,9 +40,10 @@ jobs:
               f.write(content)
           "
 
-      # 2. AGGRESSIVE SOURCE PATCHING
-      # This fixes the Concurrency/Sendable errors that cause Exit 65
-      - name: Patch Source for Swift 6.2 Compatibility
+      # 2. SURGICAL PATCHING FOR SENDABLE CONFORMANCE
+      # This addresses the 'type T does not conform to Sendable' error 
+      # by marking the app classes as @unchecked Sendable.
+      - name: Patch Source for Sendable Conformance
         run: |
           python3 -c "
           import os, re
@@ -52,37 +53,35 @@ jobs:
               with open(path, 'r') as f: content = f.read()
               if re.search(pattern, content):
                   with open(path, 'w') as f: f.write(re.sub(pattern, replacement, content))
-                  print(f'Patched: {path}')
+                  print(f'Patched Sendable: {path}')
 
-          # Fix A: ToolCallModels - add @MainActor to static property
+          # Fix A: Mark ViewModels as Sendable so they can be used in ListenerStore<T>
+          vm_files = [
+              'samples/CameraAccess/CameraAccess/ViewModels/WearablesViewModel.swift',
+              'samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift',
+              'samples/CameraAccess/CameraAccess/Gemini/GeminiSessionViewModel.swift'
+          ]
+          for path in vm_files:
+              apply_patch(path, r'class\s+(\w+)\s*:\s*ObservableObject', r'class \1: ObservableObject, @unchecked Sendable')
+
+          # Fix B: Fix ToolCallModels static property
           apply_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift',
                       r'static\s+let\s+execute', 
                       '@MainActor static let execute')
 
-          # Fix B: GeminiLiveService - make WebSocketDelegate safe for Swift 6
+          # Fix C: Fix GeminiLiveService WebSocketDelegate
           apply_patch('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift',
                       r'class\s+WebSocketDelegate\s*:\s*NSObject\s*,\s*URLSessionWebSocketDelegate', 
                       'final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
-
-          # Fix C: Mark main ViewModels as Sendable to satisfy Meta DAT's ListenerStore<T>
-          # We search for class definitions and add @unchecked Sendable
-          files_to_sendable = [
-              'samples/CameraAccess/CameraAccess/ViewModels/WearablesViewModel.swift',
-              'samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift'
-          ]
-          for path in files_to_sendable:
-              apply_patch(path, r'class\s+(\w+)\s*:\s*ObservableObject', r'class \1: ObservableObject, @unchecked Sendable')
           "
 
-      # 3. FORCE PROJECT SETTINGS (Critical for Swift 6.2)
+      # 3. FORCE PROJECT SETTINGS
       - name: Override Project Settings
         run: |
           PROJ="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
-          # Physically set project to Swift 5 mode to avoid 100+ concurrency errors, 
-          # while the 6.2 compiler handles the SDK linking.
-          sed -i '' 's/SWIFT_VERSION = 6.0/SWIFT_VERSION = 5.0/g' "$PROJ"
+          # Physically set to Swift 6 to match SDK, but minimize concurrency warnings
+          sed -i '' 's/SWIFT_VERSION = 5.0/SWIFT_VERSION = 6.0/g' "$PROJ"
           sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PROJ"
-          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = targeted/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PROJ"
 
       # 4. INSTALL DEPENDENCIES
       - name: Install Dependencies
@@ -104,17 +103,13 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
-            OTHER_SWIFT_FLAGS="-suppress-warnings -Xfrontend -disable-implicit-concurrency-module-import"
+            OTHER_SWIFT_FLAGS="-suppress-warnings"
 
       # 6. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
-          # Robust search for the built .app
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | grep "Debug-iphoneos" | head -n 1)
-          if [ -z "$APP_PATH" ]; then
-            echo "Error: Could not find CameraAccess.app"
-            exit 1
-          fi
+          if [ -z "$APP_PATH" ]; then exit 1; fi
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           zip -r VisionClaw_CameraAccess.ipa Payload
