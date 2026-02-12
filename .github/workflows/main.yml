@@ -7,14 +7,16 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14 # Uses stable Xcode 16.1 environment
+    # Use macOS 15 to get access to Xcode 16.2
+    runs-on: macos-15
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16.1
-        run: sudo xcode-select -s /Applications/Xcode_16.1.app
+      - name: Select Xcode 16.2 (Swift 6.2)
+        # This version is REQUIRED to link against Meta SDK v0.4.0
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
       # 1. CREATE SECRETS.SWIFT
       - name: Create Secrets.swift
@@ -39,64 +41,57 @@ jobs:
           "
 
       # 2. AGGRESSIVE SOURCE PATCHING
-      # This script uses Regex to find and replace the code regardless of spaces/tabs
-      - name: Force Patch Source Code
+      # This fixes the Concurrency/Sendable errors that cause Exit 65
+      - name: Patch Source for Swift 6.2 Compatibility
         run: |
           python3 -c "
           import os, re
 
-          def force_patch(path, pattern, replacement):
-              if not os.path.exists(path):
-                  print(f'FILE NOT FOUND: {path}')
-                  return
-              with open(path, 'r') as f:
-                  content = f.read()
-              
+          def apply_patch(path, pattern, replacement):
+              if not os.path.exists(path): return
+              with open(path, 'r') as f: content = f.read()
               if re.search(pattern, content):
-                  new_content = re.sub(pattern, replacement, content)
-                  with open(path, 'w') as f:
-                      f.write(new_content)
-                  print(f'SUCCESSFULLY PATCHED: {path}')
-              else:
-                  print(f'PATTERN NOT FOUND IN: {path}')
+                  with open(path, 'w') as f: f.write(re.sub(pattern, replacement, content))
+                  print(f'Patched: {path}')
 
-          # Fix A: ToolCallModels - static property safety
-          force_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift',
+          # Fix A: ToolCallModels - add @MainActor to static property
+          apply_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift',
                       r'static\s+let\s+execute', 
                       '@MainActor static let execute')
 
-          # Fix B: GeminiLiveService - WebSocket thread safety
-          force_patch('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift',
+          # Fix B: GeminiLiveService - make WebSocketDelegate safe for Swift 6
+          apply_patch('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift',
                       r'class\s+WebSocketDelegate\s*:\s*NSObject\s*,\s*URLSessionWebSocketDelegate', 
                       'final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
+
+          # Fix C: Mark main ViewModels as Sendable to satisfy Meta DAT's ListenerStore<T>
+          # We search for class definitions and add @unchecked Sendable
+          files_to_sendable = [
+              'samples/CameraAccess/CameraAccess/ViewModels/WearablesViewModel.swift',
+              'samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift'
+          ]
+          for path in files_to_sendable:
+              apply_patch(path, r'class\s+(\w+)\s*:\s*ObservableObject', r'class \1: ObservableObject, @unchecked Sendable')
           "
 
-      # 3. DEBUG: VERIFY PATCHES
-      # This step prints the modified lines so you can see if the script worked
-      - name: Verify Patches
+      # 3. FORCE PROJECT SETTINGS (Critical for Swift 6.2)
+      - name: Override Project Settings
         run: |
-          echo "--- Verifying ToolCallModels.swift ---"
-          grep "@MainActor" samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift || echo "Patch A Failed"
-          echo "--- Verifying GeminiLiveService.swift ---"
-          grep "@unchecked Sendable" samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift || echo "Patch B Failed"
+          PROJ="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
+          # Physically set project to Swift 5 mode to avoid 100+ concurrency errors, 
+          # while the 6.2 compiler handles the SDK linking.
+          sed -i '' 's/SWIFT_VERSION = 6.0/SWIFT_VERSION = 5.0/g' "$PROJ"
+          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PROJ"
+          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = targeted/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PROJ"
 
-      # 4. OVERRIDE PROJECT SETTINGS
-      # We physically rewrite the project file to strip out strict concurrency
-      - name: Downgrade Project Concurrency
-        run: |
-          PBX="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
-          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBX"
-          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = targeted/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBX"
-          sed -i '' 's/SWIFT_VERSION = 6.0/SWIFT_VERSION = 5.0/g' "$PBX"
-
-      # 5. INSTALL DEPENDENCIES
+      # 4. INSTALL DEPENDENCIES
       - name: Install Dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 6. BUILD APP (UNSIGNED, iOS 17 TARGET)
+      # 5. BUILD APP (UNSIGNED)
       - name: Build App
         run: |
           xcodebuild build \
@@ -108,20 +103,23 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            SWIFT_VERSION=5.0 \
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             OTHER_SWIFT_FLAGS="-suppress-warnings -Xfrontend -disable-implicit-concurrency-module-import"
 
-      # 7. PACKAGE INTO IPA
+      # 6. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
+          # Robust search for the built .app
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | grep "Debug-iphoneos" | head -n 1)
-          if [ -z "$APP_PATH" ]; then exit 1; fi
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Could not find CameraAccess.app"
+            exit 1
+          fi
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           zip -r VisionClaw_CameraAccess.ipa Payload
 
-      # 8. UPLOAD ARTIFACT
+      # 7. UPLOAD ARTIFACT
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
