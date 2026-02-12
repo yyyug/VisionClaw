@@ -7,17 +7,18 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # Changed from macos-14 to macos-15 to get Xcode 16 support
+    runs-on: macos-15
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+        # Updated to select Xcode 16.0 (required for Project Format 70)
+        run: sudo xcode-select -s /Applications/Xcode_16.app
 
       # 1. CREATE SECRETS.SWIFT
-      # Based on your update: samples/CameraAccess/CameraAccess/Secrets.swift
       - name: Create Secrets.swift
         run: |
           DIRECTORY="samples/CameraAccess/CameraAccess"
@@ -37,7 +38,6 @@ jobs:
           echo "Secrets.swift created in $DIRECTORY"
 
       # 2. INSTALL DEPENDENCIES
-      # Based on your update: samples/CameraAccess/CameraAccess.xcodeproj
       - name: Install Dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
