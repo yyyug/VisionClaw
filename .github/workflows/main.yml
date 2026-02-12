@@ -7,14 +7,13 @@ on:
 
 jobs:
   build:
-    # We must use macOS 15 to access Xcode 16.2
     runs-on: macos-15
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16.2 (Required for Swift 6.2)
+      - name: Select Xcode 16.2
         run: sudo xcode-select -s /Applications/Xcode_16.4.app
 
       # 1. CREATE SECRETS.SWIFT
@@ -39,8 +38,7 @@ jobs:
               f.write(content)
           "
 
-      # 2. SURGICAL PATCHING FOR SENDABLE CONFORMANCE
-      # This fixes the 'type T does not conform to Sendable' error
+      # 2. SURGICAL PATCHING FOR SWIFT 6 ERRORS
       - name: Patch Source Code
         run: |
           python3 -c "
@@ -49,36 +47,41 @@ jobs:
           def apply_patch(path, pattern, replacement):
               if not os.path.exists(path): return
               with open(path, 'r') as f: content = f.read()
-              if re.search(pattern, content):
-                  with open(path, 'w') as f: f.write(re.sub(pattern, replacement, content))
-                  print(f'Patched: {path}')
+              new_content = re.sub(pattern, replacement, content)
+              if new_content != content:
+                  with open(path, 'w') as f: f.write(new_content)
+                  print(f'Successfully patched: {path}')
 
-          # Fix A: Mark main ViewModels as @unchecked Sendable 
-          # This allows them to be used in the Meta SDK's ListenerStore<T>
-          vm_files = [
-              'samples/CameraAccess/CameraAccess/ViewModels/WearablesViewModel.swift',
-              'samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift',
-              'samples/CameraAccess/CameraAccess/Gemini/GeminiSessionViewModel.swift'
-          ]
-          for path in vm_files:
-              apply_patch(path, r'class\s+(\w+)\s*:\s*ObservableObject', r'class \1: ObservableObject, @unchecked Sendable')
+          # Fix 1: Explicit 'self.' in StreamSessionViewModel closures
+          apply_patch('samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift',
+                      r'(?<!self\.)formatStreamingError', 'self.formatStreamingError')
+          apply_patch('samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift',
+                      r'(?<!self\.)showError', 'self.showError')
 
-          # Fix B: ToolCallModels static property safety
+          # Fix 2: Actor isolation in ToolCallModels (mark calling func as @MainActor)
           apply_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift',
-                      r'static\s+let\s+execute', 
-                      '@MainActor static let execute')
+                      r'static\s+let\s+execute', '@MainActor static let execute')
+          apply_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift',
+                      r'static\s+func\s+allDeclarations', '@MainActor static func allDeclarations')
 
-          # Fix C: GeminiLiveService WebSocket thread safety
+          # Fix 3: Concurrency safety for WebSocketDelegate
           apply_patch('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift',
                       r'class\s+WebSocketDelegate\s*:\s*NSObject\s*,\s*URLSessionWebSocketDelegate', 
                       'final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
+
+          # Fix 4: Sendable conformance for Meta DAT generic Store
+          vm_files = [
+              'samples/CameraAccess/CameraAccess/ViewModels/WearablesViewModel.swift',
+              'samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift'
+          ]
+          for path in vm_files:
+              apply_patch(path, r'class\s+(\w+)\s*:\s*ObservableObject', r'class \1: ObservableObject, @unchecked Sendable')
           "
 
-      # 3. OVERRIDE PROJECT SETTINGS (Match Meta SDK version)
+      # 3. OVERRIDE PROJECT SETTINGS
       - name: Force Project Settings
         run: |
           PROJ="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
-          # Set to Swift 6 to match MWDATCore SDK, but use 'minimal' to ignore internal warnings
           sed -i '' 's/SWIFT_VERSION = [0-9.]*;/SWIFT_VERSION = 6.0;/g' "$PROJ"
           sed -i '' 's/SWIFT_STRICT_CONCURRENCY = [a-z]*;/SWIFT_STRICT_CONCURRENCY = minimal;/g' "$PROJ"
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 17.0;/g' "$PROJ"
@@ -90,7 +93,7 @@ jobs:
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 5. BUILD APP (UNSIGNED DEVICE BUILD)
+      # 5. BUILD APP (UNSIGNED)
       - name: Build App
         run: |
           xcodebuild build \
