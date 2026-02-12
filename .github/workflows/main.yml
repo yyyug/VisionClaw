@@ -16,32 +16,28 @@ jobs:
       - name: Set up Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
 
-      # 1. CREATE THE SECRETS.SWIFT FILE
-      # This creates the file that was gitignored and fills in your Gemini Key
-      - name: Create Secrets.swift and Inject Key
+      # 1. CREATE SECRETS.SWIFT AT THE EXACT LOCATION
+      # Since the file is gitignored, we create it here so the app can compile.
+      - name: Create Secrets.swift
         run: |
-          DIRECTORY="samples/CameraAccess/CameraAccess/Gemini"
-          FILE="$DIRECTORY/Secrets.swift"
+          PATH_TO_SECRETS="samples/CameraAccess/CameraAccess/Secrets.swift"
           
-          echo "Creating $FILE..."
+          echo "Creating Secrets.swift at $PATH_TO_SECRETS"
           
-          # We use cat to write the exact Swift structure required by the project
-          cat <<EOF > "$FILE"
+          cat <<EOF > "$PATH_TO_SECRETS"
           import Foundation
 
           enum Secrets {
-            // Secret injected from GitHub Actions
+            // Injected from GitHub Secrets
             static let geminiAPIKey = "${{ secrets.GEMINI_API_KEY }}"
 
-            // Optional OpenClaw values (set to defaults as they aren't required for basic use)
+            // Default values for OpenClaw (not required for basic use)
             static let openClawHost = "http://localhost.local"
             static let openClawPort = 18789
-            static let openClawHookToken = "none"
-            static let openClawGatewayToken = "none"
+            static let openClawHookToken = "YOUR_OPENCLAW_HOOK_TOKEN"
+            static let openClawGatewayToken = "YOUR_OPENCLAW_GATEWAY_TOKEN"
           }
           EOF
-          
-          echo "Secrets.swift created successfully."
 
       # 2. INSTALL DEPENDENCIES
       - name: Install Dependencies
