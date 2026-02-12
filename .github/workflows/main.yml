@@ -7,15 +7,16 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15 # Use macOS 15 to ensure Xcode 16.2 is available
+    # macOS 14 is stable and has the necessary Xcode 16 tools
+    runs-on: macos-14
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16.2
-        # We need this compiler version to read the Meta SDK modules (Swift 6.2)
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+      - name: Select Xcode 16.1
+        # This version supports the new project format and is very stable
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app
 
       # 1. CREATE SECRETS.SWIFT
       - name: Create Secrets.swift
@@ -42,33 +43,42 @@ jobs:
       # 2. INSTALL DEPENDENCIES
       - name: Install Dependencies
         run: |
-          xcodebuild -resolvePackageDependencies \
-            -project "samples/CameraAccess/CameraAccess.xcodeproj" \
-            -scheme "CameraAccess"
+          PROJ=$(find . -name "CameraAccess.xcodeproj" | head -n 1)
+          xcodebuild -resolvePackageDependencies -project "$PROJ" -scheme "CameraAccess"
 
-      # 3. BUILD APP (SWIFT 5 LANGUAGE MODE)
-      # We force SWIFT_VERSION=5.0 so the compiler doesn't enforce Swift 6 strictness
+      # 3. BUILD APP (TARGETING iOS 17)
       - name: Build App
         run: |
-          xcodebuild archive \
-            -project "samples/CameraAccess/CameraAccess.xcodeproj" \
+          PROJ=$(find . -name "CameraAccess.xcodeproj" | head -n 1)
+          
+          xcodebuild build \
+            -project "$PROJ" \
             -scheme "CameraAccess" \
             -sdk iphoneos \
-            -archivePath "build/CameraAccess.xcarchive" \
-            -destination 'generic/platform=iOS' \
+            -destination "generic/platform=iOS" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             SWIFT_VERSION=5.0 \
             SWIFT_STRICT_CONCURRENCY=minimal \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             OTHER_SWIFT_FLAGS="-suppress-warnings"
 
       # 4. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
+          # Find the compiled app folder
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | grep "Debug-iphoneos" | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Could not find CameraAccess.app"
+            exit 1
+          fi
+          
+          echo "Found app at: $APP_PATH"
           mkdir -p Payload
-          cp -r build/CameraAccess.xcarchive/Products/Applications/CameraAccess.app Payload/
+          cp -r "$APP_PATH" Payload/
           zip -r VisionClaw_CameraAccess.ipa Payload
 
       # 5. UPLOAD ARTIFACT
