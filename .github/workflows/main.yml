@@ -7,18 +7,17 @@ on:
 
 jobs:
   build:
-    # macOS 14 is stable and has the necessary Xcode 16 tools
-    runs-on: macos-14
+    runs-on: macos-14 # Stable runner with Xcode 16.1
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Select Xcode 16.1
-        # This version supports the new project format and is very stable
         run: sudo xcode-select -s /Applications/Xcode_16.1.app
 
       # 1. CREATE SECRETS.SWIFT
+      # Uses Python to ensure the API Key is injected without string errors
       - name: Create Secrets.swift
         env:
           GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -40,19 +39,35 @@ jobs:
               f.write(content)
           "
 
-      # 2. INSTALL DEPENDENCIES
+      # 2. PATCH SOURCE CODE (Fixes Swift 6 Strict Concurrency errors)
+      - name: Patch Source Code
+        run: |
+          # Patch A: Fix ToolCallModels.swift static property safety
+          TOOL_FILE="samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift"
+          if [ -f "$TOOL_FILE" ]; then
+            sed -i '' 's/static let execute/@MainActor static let execute/g' "$TOOL_FILE"
+            echo "Patched ToolCallModels.swift"
+          fi
+
+          # Patch B: Fix GeminiLiveService.swift WebSocket Sendable error
+          GEMINI_FILE="samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift"
+          if [ -f "$GEMINI_FILE" ]; then
+            sed -i '' 's/private class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate/private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable/g' "$GEMINI_FILE"
+            echo "Patched GeminiLiveService.swift"
+          fi
+
+      # 3. INSTALL DEPENDENCIES
       - name: Install Dependencies
         run: |
-          PROJ=$(find . -name "CameraAccess.xcodeproj" | head -n 1)
-          xcodebuild -resolvePackageDependencies -project "$PROJ" -scheme "CameraAccess"
+          xcodebuild -resolvePackageDependencies \
+            -project "samples/CameraAccess/CameraAccess.xcodeproj" \
+            -scheme "CameraAccess"
 
-      # 3. BUILD APP (TARGETING iOS 17)
+      # 4. BUILD APP (UNSIGNED)
       - name: Build App
         run: |
-          PROJ=$(find . -name "CameraAccess.xcodeproj" | head -n 1)
-          
           xcodebuild build \
-            -project "$PROJ" \
+            -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess" \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
@@ -65,23 +80,19 @@ jobs:
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             OTHER_SWIFT_FLAGS="-suppress-warnings"
 
-      # 4. PACKAGE INTO IPA
+      # 5. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
-          # Find the compiled app folder
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | grep "Debug-iphoneos" | head -n 1)
-          
           if [ -z "$APP_PATH" ]; then
             echo "Error: Could not find CameraAccess.app"
             exit 1
           fi
-          
-          echo "Found app at: $APP_PATH"
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           zip -r VisionClaw_CameraAccess.ipa Payload
 
-      # 5. UPLOAD ARTIFACT
+      # 6. UPLOAD ARTIFACT
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
