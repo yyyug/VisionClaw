@@ -38,38 +38,50 @@ jobs:
               f.write(content)
           "
 
-      # 2. PATCH PROJECT FILE & SOURCE CODE
-      # This forces 'minimal' concurrency and patches problematic lines
-      - name: Force Patch Project and Code
+      # 2. ROBUST SOURCE PATCHING (Python handles text replacement better than sed)
+      - name: Patch Source Code for Swift 6 Compatibility
         run: |
-          # A. Force Project Settings to ignore Strict Concurrency
+          python3 -c "
+          import os
+
+          def patch_file(path, search, replace):
+              if os.path.exists(path):
+                  with open(path, 'r') as f:
+                      content = f.read()
+                  if search in content:
+                      new_content = content.replace(search, replace)
+                      with open(path, 'w') as f:
+                          f.write(new_content)
+                      print(f'Successfully patched {path}')
+                  else:
+                      print(f'Search string not found in {path}')
+
+          # Fix ToolCallModels
+          patch_file('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift', 
+                     'static let execute: [String: Any]', 
+                     '@MainActor static let execute: [String: Any]')
+
+          # Fix GeminiLiveService
+          patch_file('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift', 
+                     'private class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate', 
+                     'private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
+          "
+
+      # 3. FORCE PROJECT SETTINGS
+      - name: Disable Strict Concurrency in Project
+        run: |
           PBXPROJ="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
-          if [ -f "$PBXPROJ" ]; then
-            sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBXPROJ"
-            sed -i '' 's/SWIFT_STRICT_CONCURRENCY = targeted/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBXPROJ"
-            echo "Project settings patched to minimal concurrency."
-          fi
+          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBXPROJ"
+          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = targeted/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBXPROJ"
 
-          # B. Patch ToolCallModels.swift
-          TOOL_FILE="samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift"
-          if [ -f "$TOOL_FILE" ]; then
-            sed -i '' 's/static let execute/@MainActor static let execute/g' "$TOOL_FILE"
-          fi
-
-          # C. Patch GeminiLiveService.swift
-          GEMINI_FILE="samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift"
-          if [ -f "$GEMINI_FILE" ]; then
-            sed -i '' 's/private class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate/private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable/g' "$GEMINI_FILE"
-          fi
-
-      # 3. INSTALL DEPENDENCIES
+      # 4. INSTALL DEPENDENCIES
       - name: Install Dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 4. BUILD APP (FORCED UNSIGNED)
+      # 5. BUILD APP (UNSIGNED)
       - name: Build App
         run: |
           xcodebuild build \
@@ -82,13 +94,13 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             SWIFT_VERSION=5.0 \
+            SWIFT_STRICT_CONCURRENCY=minimal \
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             OTHER_SWIFT_FLAGS="-suppress-warnings"
 
-      # 5. PACKAGE INTO IPA
+      # 6. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
-          # Find the built .app
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | grep "Debug-iphoneos" | head -n 1)
           if [ -z "$APP_PATH" ]; then
             echo "Error: Could not find CameraAccess.app"
@@ -98,7 +110,7 @@ jobs:
           cp -r "$APP_PATH" Payload/
           zip -r VisionClaw_CameraAccess.ipa Payload
 
-      # 6. UPLOAD ARTIFACT
+      # 7. UPLOAD ARTIFACT
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
