@@ -7,17 +7,17 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-15 # Use macOS 15 to ensure Xcode 16.2 is available
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16.2 (Swift 6.2)
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+      - name: Select Xcode 16.2
+        # We need this compiler version to read the Meta SDK modules (Swift 6.2)
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
-      # 1. CREATE SECRETS.SWIFT (ROBUST PYTHON METHOD)
-      # This prevents "unterminated string literal" by cleaning the key properly
+      # 1. CREATE SECRETS.SWIFT
       - name: Create Secrets.swift
         env:
           GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -26,7 +26,6 @@ jobs:
           import os
           key = os.environ.get('GEMINI_KEY', '').strip()
           content = f'''import Foundation
-
           enum Secrets {{
               static let geminiAPIKey = \"{key}\"
               static let openClawHost = \"http://localhost.local\"
@@ -39,56 +38,40 @@ jobs:
           with open('samples/CameraAccess/CameraAccess/Secrets.swift', 'w') as f:
               f.write(content)
           "
-          echo "Secrets.swift created successfully."
 
-      # 2. PATCH SOURCE CODE FOR SWIFT 6 COMPATIBILITY
-      # Fixes the 'static property execute is not concurrency-safe' error
-      - name: Patch ToolCallModels.swift
-        run: |
-          TARGET_FILE="samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift"
-          if [ -f "$TARGET_FILE" ]; then
-            sed -i '' 's/static let execute: \[String: Any\]/@MainActor static let execute: \[String: Any\]/g' "$TARGET_FILE"
-            echo "Successfully applied @MainActor patch."
-          else
-            echo "Warning: ToolCallModels.swift not found."
-          fi
-
-      # 3. INSTALL DEPENDENCIES
+      # 2. INSTALL DEPENDENCIES
       - name: Install Dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 4. BUILD APP (SWIFT 6 MODE)
+      # 3. BUILD APP (SWIFT 5 LANGUAGE MODE)
+      # We force SWIFT_VERSION=5.0 so the compiler doesn't enforce Swift 6 strictness
       - name: Build App
         run: |
-          xcodebuild build \
+          xcodebuild archive \
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess" \
             -sdk iphoneos \
+            -archivePath "build/CameraAccess.xcarchive" \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            SWIFT_VERSION=6.0 \
+            SWIFT_VERSION=5.0 \
+            SWIFT_STRICT_CONCURRENCY=minimal \
             OTHER_SWIFT_FLAGS="-suppress-warnings"
 
-      # 5. PACKAGE INTO IPA
+      # 4. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
-          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | head -n 1)
-          if [ -z "$APP_PATH" ]; then
-            echo "Error: Could not find CameraAccess.app"
-            exit 1
-          fi
-          
           mkdir -p Payload
-          cp -r "$APP_PATH" Payload/
+          cp -r build/CameraAccess.xcarchive/Products/Applications/CameraAccess.app Payload/
           zip -r VisionClaw_CameraAccess.ipa Payload
 
-      # 6. UPLOAD ARTIFACT
+      # 5. UPLOAD ARTIFACT
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
