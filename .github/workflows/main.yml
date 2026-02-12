@@ -16,31 +16,41 @@ jobs:
       - name: Select Xcode 16.2 (Swift 6.2)
         run: sudo xcode-select -s /Applications/Xcode_16.4.app
 
-      # 1. CREATE SECRETS.SWIFT
-      # Using an environment variable for the secret is the safest way to handle special characters.
+      # 1. CREATE SECRETS.SWIFT (ROBUST PYTHON METHOD)
+      # This prevents "unterminated string literal" by cleaning the key properly
       - name: Create Secrets.swift
         env:
           GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          DIRECTORY="samples/CameraAccess/CameraAccess"
-          mkdir -p "$DIRECTORY"
-          
-          # Use the env variable to prevent shell expansion issues
-          printf 'import Foundation\n\nenum Secrets {\n  static let geminiAPIKey = "%s"\n  static let openClawHost = "http://localhost.local"\n  static let openClawPort = 18789\n  static let openClawHookToken = "none"\n  static let openClawGatewayToken = "none"\n}\n' "$GEMINI_KEY" > "$DIRECTORY/Secrets.swift"
-          
-          echo "Secrets.swift created."
+          python3 -c "
+          import os
+          key = os.environ.get('GEMINI_KEY', '').strip()
+          content = f'''import Foundation
+
+          enum Secrets {{
+              static let geminiAPIKey = \"{key}\"
+              static let openClawHost = \"http://localhost.local\"
+              static let openClawPort = 18789
+              static let openClawHookToken = \"none\"
+              static let openClawGatewayToken = \"none\"
+          }}
+          '''
+          os.makedirs('samples/CameraAccess/CameraAccess', exist_ok=True)
+          with open('samples/CameraAccess/CameraAccess/Secrets.swift', 'w') as f:
+              f.write(content)
+          "
+          echo "Secrets.swift created successfully."
 
       # 2. PATCH SOURCE CODE FOR SWIFT 6 COMPATIBILITY
-      # The compiler complained that 'execute' isn't concurrency-safe. 
-      # We add @MainActor to satisfy the Swift 6 compiler.
+      # Fixes the 'static property execute is not concurrency-safe' error
       - name: Patch ToolCallModels.swift
         run: |
           TARGET_FILE="samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift"
           if [ -f "$TARGET_FILE" ]; then
             sed -i '' 's/static let execute: \[String: Any\]/@MainActor static let execute: \[String: Any\]/g' "$TARGET_FILE"
-            echo "Successfully patched ToolCallModels.swift with @MainActor"
+            echo "Successfully applied @MainActor patch."
           else
-            echo "Warning: ToolCallModels.swift not found, skipping patch."
+            echo "Warning: ToolCallModels.swift not found."
           fi
 
       # 3. INSTALL DEPENDENCIES
