@@ -7,16 +7,17 @@ on:
 
 jobs:
   build:
-    # Changed from macos-14 to macos-15 to get Xcode 16 support
-    runs-on: macos-15
+    # Switching back to macos-14 but explicitly selecting Xcode 16.0
+    # This runner is often more stable with SDK paths.
+    runs-on: macos-14
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Xcode
-        # Updated to select Xcode 16.0 (required for Project Format 70)
-        run: sudo xcode-select -s /Applications/Xcode_16.app
+        # Selects Xcode 16.0 which is available on macos-14 runners
+        run: sudo xcode-select -s /Applications/Xcode_16.0.app
 
       # 1. CREATE SECRETS.SWIFT
       - name: Create Secrets.swift
@@ -35,7 +36,7 @@ jobs:
             static let openClawGatewayToken = "none"
           }
           EOF
-          echo "Secrets.swift created in $DIRECTORY"
+          echo "Secrets.swift created."
 
       # 2. INSTALL DEPENDENCIES
       - name: Install Dependencies
@@ -44,12 +45,13 @@ jobs:
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 3. BUILD APP (NO SIGNING)
+      # 3. BUILD APP (WITH SDK FLAG)
       - name: Build App
         run: |
           xcodebuild build \
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess" \
+            -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -59,7 +61,7 @@ jobs:
       # 4. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
-          # Find the app folder inside the build results
+          # Use a broad search to find the .app folder in the build results
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | head -n 1)
           echo "Found app at: $APP_PATH"
           
