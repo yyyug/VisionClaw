@@ -7,7 +7,6 @@ on:
 
 jobs:
   build:
-    # macOS 15 is required for the latest Xcode 16.2
     runs-on: macos-15
     
     steps:
@@ -15,36 +14,43 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Select Xcode 16.2 (Swift 6.2)
-        # On GitHub macos-15 runners, Xcode 16.2 is located at this path
         run: sudo xcode-select -s /Applications/Xcode_16.4.app
 
       # 1. CREATE SECRETS.SWIFT
+      # Using an environment variable for the secret is the safest way to handle special characters.
       - name: Create Secrets.swift
+        env:
+          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           DIRECTORY="samples/CameraAccess/CameraAccess"
           mkdir -p "$DIRECTORY"
           
-          cat <<EOF > "$DIRECTORY/Secrets.swift"
-          import Foundation
-
-          enum Secrets {
-            static let geminiAPIKey = "${{ secrets.GEMINI_API_KEY }}"
-            static let openClawHost = "http://localhost.local"
-            static let openClawPort = 18789
-            static let openClawHookToken = "none"
-            static let openClawGatewayToken = "none"
-          }
-          EOF
+          # Use the env variable to prevent shell expansion issues
+          printf 'import Foundation\n\nenum Secrets {\n  static let geminiAPIKey = "%s"\n  static let openClawHost = "http://localhost.local"\n  static let openClawPort = 18789\n  static let openClawHookToken = "none"\n  static let openClawGatewayToken = "none"\n}\n' "$GEMINI_KEY" > "$DIRECTORY/Secrets.swift"
+          
           echo "Secrets.swift created."
 
-      # 2. INSTALL DEPENDENCIES
+      # 2. PATCH SOURCE CODE FOR SWIFT 6 COMPATIBILITY
+      # The compiler complained that 'execute' isn't concurrency-safe. 
+      # We add @MainActor to satisfy the Swift 6 compiler.
+      - name: Patch ToolCallModels.swift
+        run: |
+          TARGET_FILE="samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift"
+          if [ -f "$TARGET_FILE" ]; then
+            sed -i '' 's/static let execute: \[String: Any\]/@MainActor static let execute: \[String: Any\]/g' "$TARGET_FILE"
+            echo "Successfully patched ToolCallModels.swift with @MainActor"
+          else
+            echo "Warning: ToolCallModels.swift not found, skipping patch."
+          fi
+
+      # 3. INSTALL DEPENDENCIES
       - name: Install Dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 3. BUILD APP (WITH SWIFT 6 CONCURRENCY FIX)
+      # 4. BUILD APP (SWIFT 6 MODE)
       - name: Build App
         run: |
           xcodebuild build \
@@ -57,10 +63,9 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             SWIFT_VERSION=6.0 \
-            STRICT_CONCURRENCY=minimal \
             OTHER_SWIFT_FLAGS="-suppress-warnings"
 
-      # 4. PACKAGE INTO IPA
+      # 5. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | head -n 1)
@@ -73,7 +78,7 @@ jobs:
           cp -r "$APP_PATH" Payload/
           zip -r VisionClaw_CameraAccess.ipa Payload
 
-      # 5. UPLOAD ARTIFACT
+      # 6. UPLOAD ARTIFACT
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
