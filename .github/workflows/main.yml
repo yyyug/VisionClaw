@@ -2,46 +2,56 @@ name: Build VisionClaw Unsigned IPA
 
 on:
   push:
-    branches: [ "main" ] # Triggers when you push to main
-  workflow_dispatch:      # Allows you to manually trigger the build from the Actions tab
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-14 # Required for iOS 17+ development
+    runs-on: macos-14
     
     steps:
-      # 1. Pull the code from your repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Select the correct Xcode version
       - name: Set up Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
 
-      # 3. Inject the Gemini API Key from GitHub Secrets
-      # This replaces the placeholder text in the code with your actual key
-      - name: Inject API Key
+      # 1. CREATE THE SECRETS.SWIFT FILE
+      # This creates the file that was gitignored and fills in your Gemini Key
+      - name: Create Secrets.swift and Inject Key
         run: |
-          TARGET_FILE="samples/CameraAccess/CameraAccess/Gemini/APIKey.swift"
-          if [ -f "$TARGET_FILE" ]; then
-            sed -i '' "s/YOUR_API_KEY/${{ secrets.GEMINI_API_KEY }}/g" "$TARGET_FILE"
-            echo "API Key successfully injected."
-          else
-            echo "Error: APIKey.swift not found at $TARGET_FILE"
-            exit 1
-          fi
+          DIRECTORY="samples/CameraAccess/CameraAccess/Gemini"
+          FILE="$DIRECTORY/Secrets.swift"
+          
+          echo "Creating $FILE..."
+          
+          # We use cat to write the exact Swift structure required by the project
+          cat <<EOF > "$FILE"
+          import Foundation
 
-      # 4. Resolve Swift Package Manager dependencies
-      # The project uses Meta Wearables SDK and Google Gemini SDK
+          enum Secrets {
+            // Secret injected from GitHub Actions
+            static let geminiAPIKey = "${{ secrets.GEMINI_API_KEY }}"
+
+            // Optional OpenClaw values (set to defaults as they aren't required for basic use)
+            static let openClawHost = "http://localhost.local"
+            static let openClawPort = 18789
+            static let openClawHookToken = "none"
+            static let openClawGatewayToken = "none"
+          }
+          EOF
+          
+          echo "Secrets.swift created successfully."
+
+      # 2. INSTALL DEPENDENCIES
       - name: Install Dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
             -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 5. Build the project for a physical iPhone (Generic Device)
-      # Note: We disable code signing because we don't have a Mac/Paid account here
-      - name: Build App (No Signing)
+      # 3. BUILD APP (NO SIGNING)
+      - name: Build App
         run: |
           xcodebuild build \
             -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" \
@@ -52,25 +62,19 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES
 
-      # 6. Package the build folder into an .ipa file
-      # This is the file you will download and install on your iPhone
+      # 4. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
-          # Locate the .app directory in the build results
+          # Find the app folder inside the build results
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | head -n 1)
-          echo "Found App at: $APP_PATH"
           
-          # Create the structure required for an IPA
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
-          
-          # Zip it up
           zip -r VisionClaw_CameraAccess.ipa Payload
 
-      # 7. Upload the final file to GitHub so you can download it
+      # 5. UPLOAD ARTIFACT
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VisionClaw-Build-Output
+          name: VisionClaw-IPA-File
           path: VisionClaw_CameraAccess.ipa
-          retention-days: 7
