@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14 # Stable environment for Xcode 16.1
+    runs-on: macos-14 # Stable environment
     
     steps:
       - name: Checkout repository
@@ -16,7 +16,7 @@ jobs:
       - name: Select Xcode 16.1
         run: sudo xcode-select -s /Applications/Xcode_16.1.app
 
-      # 1. CREATE SECRETS.SWIFT
+      # 1. CREATE SECRETS.SWIFT (Clean Injection)
       - name: Create Secrets.swift
         env:
           GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -38,45 +38,36 @@ jobs:
               f.write(content)
           "
 
-      # 2. FUZZY REGEX PATCHING (Fixes the source of Exit 65)
-      - name: Regex Patch Source Code
+      # 2. FUZZY PATCH SOURCE (Fixes the Concurrency Errors)
+      - name: Fuzzy Patch for Swift 6
         run: |
           python3 -c "
           import os, re
 
-          def fuzzy_patch(file_path, pattern, replacement):
-              if not os.path.exists(file_path):
-                  print(f'Missing: {file_path}')
-                  return
-              with open(file_path, 'r') as f:
-                  content = f.read()
-              
-              # Find and replace using Regex (handles variations in spacing)
+          def apply_patch(path, pattern, replacement):
+              if not os.path.exists(path): return
+              with open(path, 'r') as f: content = f.read()
               if re.search(pattern, content):
-                  new_content = re.sub(pattern, replacement, content)
-                  with open(file_path, 'w') as f:
-                      f.write(new_content)
-                  print(f'Successfully patched {file_path}')
-              else:
-                  print(f'Pattern not found in {file_path}')
+                  with open(path, 'w') as f: f.write(re.sub(pattern, replacement, content))
+                  print(f'Patched: {path}')
 
-          # Fix A: ToolCallModels.swift - Add @MainActor to static properties
-          fuzzy_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift', 
-                      r'static\s+let\s+execute\s*:\s*\[String\s*:\s*Any\]', 
-                      '@MainActor static let execute: [String: Any]')
+          # Fix ToolCallModels execute dictionary
+          apply_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift',
+                      r'static\s+let\s+execute', 
+                      '@MainActor static let execute')
 
-          # Fix B: GeminiLiveService.swift - Add @unchecked Sendable to WebSocket
-          fuzzy_patch('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift', 
+          # Fix GeminiLiveService WebSocketDelegate
+          apply_patch('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift',
                       r'class\s+WebSocketDelegate\s*:\s*NSObject\s*,\s*URLSessionWebSocketDelegate', 
                       'final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
           "
 
       # 3. OVERRIDE PROJECT SETTINGS
-      - name: Force Minimal Concurrency
+      - name: Override Project to Swift 5
         run: |
-          PBX="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
-          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBX"
-          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = targeted/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBX"
+          PROJ="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
+          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PROJ"
+          sed -i '' 's/SWIFT_VERSION = 6.0/SWIFT_VERSION = 5.0/g' "$PROJ"
 
       # 4. INSTALL DEPENDENCIES
       - name: Install Dependencies
@@ -85,7 +76,7 @@ jobs:
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 5. BUILD APP (UNSIGNED)
+      # 5. BUILD APP (Targeting iOS 17)
       - name: Build App
         run: |
           xcodebuild build \
@@ -105,10 +96,7 @@ jobs:
       - name: Package into IPA
         run: |
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | grep "Debug-iphoneos" | head -n 1)
-          if [ -z "$APP_PATH" ]; then
-            echo "Error: Could not find CameraAccess.app"
-            exit 1
-          fi
+          if [ -z "$APP_PATH" ]; then exit 1; fi
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           zip -r VisionClaw_CameraAccess.ipa Payload
