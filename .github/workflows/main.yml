@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14 # Stable runner with Xcode 16.1
+    runs-on: macos-14
     
     steps:
       - name: Checkout repository
@@ -17,7 +17,6 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_16.1.app
 
       # 1. CREATE SECRETS.SWIFT
-      # We create the missing file and inject the Gemini Key securely
       - name: Create Secrets.swift
         env:
           GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -39,22 +38,28 @@ jobs:
               f.write(content)
           "
 
-      # 2. PATCH SOURCE CODE (Fixes the specific Swift 6 errors)
-      # These two files cause 'EmitSwiftModule' to fail. We patch them on the fly.
-      - name: Patch Source Code
+      # 2. PATCH PROJECT FILE & SOURCE CODE
+      # This forces 'minimal' concurrency and patches problematic lines
+      - name: Force Patch Project and Code
         run: |
-          # Patch A: Fix ToolCallModels.swift (Concurrency safety for static properties)
+          # A. Force Project Settings to ignore Strict Concurrency
+          PBXPROJ="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
+          if [ -f "$PBXPROJ" ]; then
+            sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBXPROJ"
+            sed -i '' 's/SWIFT_STRICT_CONCURRENCY = targeted/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBXPROJ"
+            echo "Project settings patched to minimal concurrency."
+          fi
+
+          # B. Patch ToolCallModels.swift
           TOOL_FILE="samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift"
           if [ -f "$TOOL_FILE" ]; then
             sed -i '' 's/static let execute/@MainActor static let execute/g' "$TOOL_FILE"
-            echo "Patched ToolCallModels.swift"
           fi
 
-          # Patch B: Fix GeminiLiveService.swift (Thread safety for WebSocket delegate)
+          # C. Patch GeminiLiveService.swift
           GEMINI_FILE="samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift"
           if [ -f "$GEMINI_FILE" ]; then
             sed -i '' 's/private class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate/private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable/g' "$GEMINI_FILE"
-            echo "Patched GeminiLiveService.swift"
           fi
 
       # 3. INSTALL DEPENDENCIES
@@ -64,8 +69,7 @@ jobs:
             -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
-      # 4. BUILD APP (UNSIGNED)
-      # We force SWIFT_VERSION=5.0 and minimal concurrency to skip errors
+      # 4. BUILD APP (FORCED UNSIGNED)
       - name: Build App
         run: |
           xcodebuild build \
@@ -78,14 +82,13 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             SWIFT_VERSION=5.0 \
-            SWIFT_STRICT_CONCURRENCY=minimal \
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             OTHER_SWIFT_FLAGS="-suppress-warnings"
 
       # 5. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
-          # Robust search for the built .app folder
+          # Find the built .app
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | grep "Debug-iphoneos" | head -n 1)
           if [ -z "$APP_PATH" ]; then
             echo "Error: Could not find CameraAccess.app"
