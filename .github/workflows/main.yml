@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-14 # Stable environment for Xcode 16.1
     
     steps:
       - name: Checkout repository
@@ -38,41 +38,57 @@ jobs:
               f.write(content)
           "
 
-      # 2. ROBUST SOURCE PATCHING (Python handles text replacement better than sed)
-      - name: Patch Source Code for Swift 6 Compatibility
+      # 2. ROBUST SOURCE PATCHING
+      # We use Python to rewrite the lines causing the 'EmitSwiftModule' failures
+      - name: Patch Source Code for Swift 6 Concurrency
         run: |
           python3 -c "
           import os
 
-          def patch_file(path, search, replace):
-              if os.path.exists(path):
-                  with open(path, 'r') as f:
-                      content = f.read()
-                  if search in content:
-                      new_content = content.replace(search, replace)
-                      with open(path, 'w') as f:
-                          f.write(new_content)
-                      print(f'Successfully patched {path}')
+          def patch_file(path, search_snippet, replacement):
+              if not os.path.exists(path):
+                  print(f'Skipping: {path} not found')
+                  return
+              with open(path, 'r') as f:
+                  lines = f.readlines()
+              
+              new_lines = []
+              found = False
+              for line in lines:
+                  if search_snippet in line and replacement not in line:
+                      new_lines.append(line.replace(search_snippet, replacement))
+                      found = True
                   else:
-                      print(f'Search string not found in {path}')
+                      new_lines.append(line)
+              
+              if found:
+                  with open(path, 'w') as f:
+                      f.writelines(new_lines)
+                  print(f'Successfully patched {path}')
 
-          # Fix ToolCallModels
+          # Fix 1: ToolCallModels static property safety
           patch_file('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift', 
-                     'static let execute: [String: Any]', 
-                     '@MainActor static let execute: [String: Any]')
+                     'static let execute', 
+                     '@MainActor static let execute')
 
-          # Fix GeminiLiveService
+          # Fix 2: GeminiLiveService WebSocket Sendable error
           patch_file('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift', 
-                     'private class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate', 
-                     'private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
+                     'private class WebSocketDelegate', 
+                     'private final class WebSocketDelegate')
+          
+          patch_file('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift', 
+                     'NSObject, URLSessionWebSocketDelegate', 
+                     'NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
           "
 
       # 3. FORCE PROJECT SETTINGS
+      # We edit the project file itself to turn off the strict checks globally
       - name: Disable Strict Concurrency in Project
         run: |
           PBXPROJ="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
           sed -i '' 's/SWIFT_STRICT_CONCURRENCY = complete/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBXPROJ"
           sed -i '' 's/SWIFT_STRICT_CONCURRENCY = targeted/SWIFT_STRICT_CONCURRENCY = minimal/g' "$PBXPROJ"
+          echo "Internal project settings updated to minimal concurrency."
 
       # 4. INSTALL DEPENDENCIES
       - name: Install Dependencies
@@ -93,10 +109,11 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            SWIFT_VERSION=5.0 \
+            SWIFT_VERSION=6.0 \
             SWIFT_STRICT_CONCURRENCY=minimal \
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
-            OTHER_SWIFT_FLAGS="-suppress-warnings"
+            OTHER_SWIFT_FLAGS="-suppress-warnings" \
+            COMPILER_INDEX_STORE_ENABLE=NO
 
       # 6. PACKAGE INTO IPA
       - name: Package into IPA
