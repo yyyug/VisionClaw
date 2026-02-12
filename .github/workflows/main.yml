@@ -17,7 +17,7 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_16.1.app
 
       # 1. CREATE SECRETS.SWIFT
-      # Uses Python to ensure the API Key is injected without string errors
+      # We create the missing file and inject the Gemini Key securely
       - name: Create Secrets.swift
         env:
           GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -39,17 +39,18 @@ jobs:
               f.write(content)
           "
 
-      # 2. PATCH SOURCE CODE (Fixes Swift 6 Strict Concurrency errors)
+      # 2. PATCH SOURCE CODE (Fixes the specific Swift 6 errors)
+      # These two files cause 'EmitSwiftModule' to fail. We patch them on the fly.
       - name: Patch Source Code
         run: |
-          # Patch A: Fix ToolCallModels.swift static property safety
+          # Patch A: Fix ToolCallModels.swift (Concurrency safety for static properties)
           TOOL_FILE="samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift"
           if [ -f "$TOOL_FILE" ]; then
             sed -i '' 's/static let execute/@MainActor static let execute/g' "$TOOL_FILE"
             echo "Patched ToolCallModels.swift"
           fi
 
-          # Patch B: Fix GeminiLiveService.swift WebSocket Sendable error
+          # Patch B: Fix GeminiLiveService.swift (Thread safety for WebSocket delegate)
           GEMINI_FILE="samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift"
           if [ -f "$GEMINI_FILE" ]; then
             sed -i '' 's/private class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate/private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable/g' "$GEMINI_FILE"
@@ -64,6 +65,7 @@ jobs:
             -scheme "CameraAccess"
 
       # 4. BUILD APP (UNSIGNED)
+      # We force SWIFT_VERSION=5.0 and minimal concurrency to skip errors
       - name: Build App
         run: |
           xcodebuild build \
@@ -83,6 +85,7 @@ jobs:
       # 5. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
+          # Robust search for the built .app folder
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | grep "Debug-iphoneos" | head -n 1)
           if [ -z "$APP_PATH" ]; then
             echo "Error: Could not find CameraAccess.app"
