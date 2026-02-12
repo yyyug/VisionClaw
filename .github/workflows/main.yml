@@ -16,41 +16,39 @@ jobs:
       - name: Set up Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
 
-      # 1. CREATE SECRETS.SWIFT AT THE EXACT LOCATION
-      # Since the file is gitignored, we create it here so the app can compile.
+      # 1. CREATE SECRETS.SWIFT
+      # Based on your update: samples/CameraAccess/CameraAccess/Secrets.swift
       - name: Create Secrets.swift
         run: |
-          PATH_TO_SECRETS="samples/CameraAccess/CameraAccess/Secrets.swift"
+          DIRECTORY="samples/CameraAccess/CameraAccess"
+          mkdir -p "$DIRECTORY"
           
-          echo "Creating Secrets.swift at $PATH_TO_SECRETS"
-          
-          cat <<EOF > "$PATH_TO_SECRETS"
+          cat <<EOF > "$DIRECTORY/Secrets.swift"
           import Foundation
 
           enum Secrets {
-            // Injected from GitHub Secrets
             static let geminiAPIKey = "${{ secrets.GEMINI_API_KEY }}"
-
-            // Default values for OpenClaw (not required for basic use)
             static let openClawHost = "http://localhost.local"
             static let openClawPort = 18789
-            static let openClawHookToken = "YOUR_OPENCLAW_HOOK_TOKEN"
-            static let openClawGatewayToken = "YOUR_OPENCLAW_GATEWAY_TOKEN"
+            static let openClawHookToken = "none"
+            static let openClawGatewayToken = "none"
           }
           EOF
+          echo "Secrets.swift created in $DIRECTORY"
 
       # 2. INSTALL DEPENDENCIES
+      # Based on your update: samples/CameraAccess/CameraAccess.xcodeproj
       - name: Install Dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
-            -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" \
+            -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
       # 3. BUILD APP (NO SIGNING)
       - name: Build App
         run: |
           xcodebuild build \
-            -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" \
+            -project "samples/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess" \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
@@ -63,6 +61,7 @@ jobs:
         run: |
           # Find the app folder inside the build results
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | head -n 1)
+          echo "Found app at: $APP_PATH"
           
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
@@ -72,5 +71,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VisionClaw-IPA-File
+          name: VisionClaw-IPA
           path: VisionClaw_CameraAccess.ipa
