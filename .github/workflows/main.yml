@@ -22,6 +22,13 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_15.4.app || true
         # runner macos-14 already provides Xcode 15.x; this is a no-op fallback
 
+      - name: Verify Xcode project & scheme
+        run: |
+          echo "=== xcodebuild -list ==="
+          xcodebuild -list -project "samples/CameraAccess/CameraAccess.xcodeproj"
+          echo "=== showBuildSettings (partial) ==="
+          xcodebuild -showBuildSettings -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" -scheme "CameraAccess" | sed -n '1,120p'
+
       # 1. CREATE SECRETS.SWIFT
       - name: Create Secrets.swift
         env:
@@ -52,34 +59,63 @@ jobs:
       # Do not override project Swift/Xcode settings here — use the project's configured SWIFT_VERSION (5.0) and deployment target (17.0).
 
       # 4. INSTALL DEPENDENCIES
-      - name: Install Dependencies
+      - name: Install Dependencies (resolve SPM)
         run: |
-          xcodebuild -resolvePackageDependencies \
-            -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" \
-            -scheme "CameraAccess"
+          set -e
+          RETRIES=3
+          for i in $(seq 1 $RETRIES); do
+            echo "SPM resolve attempt $i"
+            if xcodebuild -resolvePackageDependencies \
+               -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" \
+               -scheme "CameraAccess"; then
+               break
+            fi
+            sleep 3
+            if [ "$i" -eq "$RETRIES" ]; then
+              echo "Failed to resolve SPM dependencies after $RETRIES attempts"
+              exit 1
+            fi
+          done
 
       # 5. BUILD APP (UNSIGNED)
-      - name: Build App
+      - name: Build App (No Signing)
         run: |
+          set -o pipefail
+          xcodebuild clean -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" -scheme "CameraAccess" -configuration Release
           xcodebuild build \
             -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess" \
             -configuration Release \
+            -derivedDataPath ./build/DerivedData \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES
+            AD_HOC_CODE_SIGNING_ALLOWED=YES | tee xcodebuild.log
+          echo "=== Build Products ==="
+          find ./build/DerivedData/Build/Products || true
+          echo "=== End Build Products ==="
+      - name: Upload xcodebuild log
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
 
       # 6. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
-          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | head -n 1)
-          if [ -z "$APP_PATH" ]; then exit 1; fi
+          APP_PATH="./build/DerivedData/Build/Products/Release-iphoneos/CameraAccess.app"
+          echo "Looking for app at $APP_PATH"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "App not found, listing build artifacts:" && ls -la ./build/DerivedData || true
+            exit 1
+          fi
+          rm -rf Payload VisionClaw_CameraAccess.ipa || true
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           zip -r VisionClaw_CameraAccess.ipa Payload
+          ls -lh VisionClaw_CameraAccess.ipa
 
       # 7. UPLOAD ARTIFACT
       - name: Upload Artifact
