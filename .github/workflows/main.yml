@@ -7,14 +7,20 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-14
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16.2
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+      - name: Print Xcode / Swift versions
+        run: |
+          xcodebuild -version || true
+          swift --version || true
+
+      - name: (optional) Set up Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app || true
+        # runner macos-14 already provides Xcode 15.x; this is a no-op fallback
 
       # 1. CREATE SECRETS.SWIFT
       - name: Create Secrets.swift
@@ -39,79 +45,37 @@ jobs:
           "
 
       # 2. SURGICAL PATCHING FOR SWIFT 6 ERRORS
-      - name: Patch Source Code
-        run: |
-          python3 -c "
-          import os, re
-
-          def apply_patch(path, pattern, replacement):
-              if not os.path.exists(path): return
-              with open(path, 'r') as f: content = f.read()
-              new_content = re.sub(pattern, replacement, content)
-              if new_content != content:
-                  with open(path, 'w') as f: f.write(new_content)
-                  print(f'Successfully patched: {path}')
-
-          # Fix 1: Explicit 'self.' in StreamSessionViewModel closures
-          apply_patch('samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift',
-                      r'(?<!self\.)formatStreamingError', 'self.formatStreamingError')
-          apply_patch('samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift',
-                      r'(?<!self\.)showError', 'self.showError')
-
-          # Fix 2: Actor isolation in ToolCallModels (mark calling func as @MainActor)
-          apply_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift',
-                      r'static\s+let\s+execute', '@MainActor static let execute')
-          apply_patch('samples/CameraAccess/CameraAccess/OpenClaw/ToolCallModels.swift',
-                      r'static\s+func\s+allDeclarations', '@MainActor static func allDeclarations')
-
-          # Fix 3: Concurrency safety for WebSocketDelegate
-          apply_patch('samples/CameraAccess/CameraAccess/Gemini/GeminiLiveService.swift',
-                      r'class\s+WebSocketDelegate\s*:\s*NSObject\s*,\s*URLSessionWebSocketDelegate', 
-                      'final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable')
-
-          # Fix 4: Sendable conformance for Meta DAT generic Store
-          vm_files = [
-              'samples/CameraAccess/CameraAccess/ViewModels/WearablesViewModel.swift',
-              'samples/CameraAccess/CameraAccess/ViewModels/StreamSessionViewModel.swift'
-          ]
-          for path in vm_files:
-              apply_patch(path, r'class\s+(\w+)\s*:\s*ObservableObject', r'class \1: ObservableObject, @unchecked Sendable')
-          "
+      # Patch step removed — project builds with Swift 5.0 on Xcode 15.x. (No surgical Swift 6 edits applied)
+      # If you need Swift-6 migration later, add a controlled patch step with unit tests.
 
       # 3. OVERRIDE PROJECT SETTINGS
-      - name: Force Project Settings
-        run: |
-          PROJ="samples/CameraAccess/CameraAccess.xcodeproj/project.pbxproj"
-          sed -i '' 's/SWIFT_VERSION = [0-9.]*;/SWIFT_VERSION = 6.0;/g' "$PROJ"
-          sed -i '' 's/SWIFT_STRICT_CONCURRENCY = [a-z]*;/SWIFT_STRICT_CONCURRENCY = minimal;/g' "$PROJ"
-          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 17.0;/g' "$PROJ"
+      # Do not override project Swift/Xcode settings here — use the project's configured SWIFT_VERSION (5.0) and deployment target (17.0).
 
       # 4. INSTALL DEPENDENCIES
       - name: Install Dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
-            -project "samples/CameraAccess/CameraAccess.xcodeproj" \
+            -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess"
 
       # 5. BUILD APP (UNSIGNED)
       - name: Build App
         run: |
           xcodebuild build \
-            -project "samples/CameraAccess/CameraAccess.xcodeproj" \
+            -project "samples/CameraAccess/CameraAccess/CameraAccess.xcodeproj" \
             -scheme "CameraAccess" \
+            -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            IPHONEOS_DEPLOYMENT_TARGET=17.0 \
-            OTHER_SWIFT_FLAGS="-suppress-warnings"
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
 
       # 6. PACKAGE INTO IPA
       - name: Package into IPA
         run: |
-          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | grep "Debug-iphoneos" | head -n 1)
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "CameraAccess.app" -type d | head -n 1)
           if [ -z "$APP_PATH" ]; then exit 1; fi
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
